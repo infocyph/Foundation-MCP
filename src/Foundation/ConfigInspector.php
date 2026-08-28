@@ -243,7 +243,12 @@ final class ConfigInspector
     private function diagnostic(string $code, ?string $source, ?int $line, string $message): void
     {
         if (count($this->diagnostics) < self::MAX_DIAGNOSTICS) {
-            $this->diagnostics[] = compact('code', 'source', 'line', 'message');
+            $this->diagnostics[] = [
+                'code' => $code,
+                'source' => $source,
+                'line' => $line,
+                'message' => $message,
+            ];
         }
     }
 

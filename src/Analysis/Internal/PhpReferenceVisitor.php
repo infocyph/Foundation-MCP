@@ -264,7 +264,12 @@ final class PhpReferenceVisitor extends NodeVisitorAbstract
 
     private function reference(string $relationship, string $target, int $line, string $confidence): void
     {
-        $this->references[] = compact('relationship', 'target', 'line', 'confidence');
+        $this->references[] = [
+            'relationship' => $relationship,
+            'target' => $target,
+            'line' => $line,
+            'confidence' => $confidence,
+        ];
     }
 
     private function resolvedName(Name $name): string
