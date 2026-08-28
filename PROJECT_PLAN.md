@@ -560,16 +560,16 @@ Inspect `bootstrap/providers.php` and equivalent host registration without insta
 
 ### Configuration
 
-Understand Foundation precedence:
+Understand the precedence implemented by the installed Foundation `ConfigLoader`/`ConfigRepository`:
 
 ```text
 Foundation defaults
--> selected preset
 -> project config/*.php
+-> selected preset
 -> inline bootstrap values
 ```
 
-Return key paths, literal defaults, referenced classes, environment variable names, ownership and source evidence. Never read actual `.env` values.
+The inspector derives Foundation default sources from the installed Foundation config contract, statically reads project config and selected preset arrays, and correlates bootstrap runtime/inline configuration without executing application or package code. It returns key paths, literal defaults where provable, referenced classes, environment variable names/default literals, ownership and source evidence. Custom `paths.config` is followed only when it is a static project-contained path. Actual `.env` values are never loaded, and secret-looking literals/defaults are redacted.
 
 ### Schedules
 
@@ -1331,7 +1331,7 @@ The first release includes the entire intended scope; no desired capability is i
 [x] route inspector
 [x] command inspector
 [x] provider inspector
-[ ] config inspector
+[x] config inspector
 [ ] schedule inspector
 [ ] Foundation maintenance-worker inspector
 [ ] Omnibus worker distinction
@@ -1391,6 +1391,7 @@ Update this checklist after each meaningful implementation chunk. Do not mark an
 - `e983e38e` — static Foundation/Webrick route inspection across authoritative project route files, Foundation OAuth candidates and Webrick route attributes; installed route-file/verb/resource contracts are derived from installed package source rather than copied registries; nested groups/preset groups/resource expansion/handlers/middleware/options/conditional and dynamic state are represented without application bootstrap or package execution; output/source limits and file-local parse diagnostics are enforced.
 - `d91db26c` — static `routes/console.php` command registration inspection plus non-executing `CommandDefinition::define()` metadata extraction for command names, aliases, descriptions, groups, runtime, capabilities, visibility, arguments/options and dynamic/conditional definitions; command inspector files are attached at their canonical paths.
 - `59dae9cf` — static `bootstrap/providers.php` inspection with provider groups derived from the installed Foundation contract, common/runtime effective provider graphs, declaration deduplication, project symbol/Composer ownership metadata, dynamic-state preservation and no provider instantiation.
+- `f9ffb2a5` — static Foundation configuration inspection across installed default sources, project config, selected preset and inline bootstrap configuration using the installed runtime precedence; bounded AST evaluation records literal/default/env/class/source evidence, preserves dynamic state, applies project/package path authorization and redacts secret-looking values without loading `.env` or bootstrapping the application.
 
 The overall `mcp/sdk STDIO integration`, `explicit MCP registration`, `doctor command`, `bounded output`, `lazy in-memory cache/invalidation` and broad test-suite checklist entries remain intentionally open until their complete production contracts are exercised across the relevant service/index/protocol/integration layers.
 
