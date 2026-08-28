@@ -8,6 +8,7 @@ use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Name;
 use PhpParser\Node\Scalar;
+use RuntimeException;
 
 /**
  * @phpstan-type EnvironmentRef array{name:string,helper:string,has_default:bool,default:mixed}
@@ -15,7 +16,13 @@ use PhpParser\Node\Scalar;
  */
 final class StaticConfigEvaluator
 {
+    private const int MAX_DEPTH = 64;
+
     private const int MAX_STRING_BYTES = 8_192;
+
+    private const int MAX_VARIABLES = 512;
+
+    private int $depth = 0;
 
     /** @var array<string, EvalResult> */
     private array $variables = [];
@@ -23,23 +30,32 @@ final class StaticConfigEvaluator
     /** @return EvalResult */
     public function evaluate(Expr $expr): array
     {
-        return match (true) {
-            $expr instanceof Scalar\String_ => $this->literal($this->string($expr->value)),
-            $expr instanceof Scalar\Int_ => $this->literal($expr->value),
-            $expr instanceof Scalar\Float_ => $this->literal($expr->value),
-            $expr instanceof Expr\ConstFetch => $this->constant($expr),
-            $expr instanceof Expr\ClassConstFetch => $this->classConstant($expr),
-            $expr instanceof Expr\Variable => $this->variable($expr),
-            $expr instanceof Expr\FuncCall => $this->functionCall($expr),
-            $expr instanceof Expr\UnaryMinus => $this->numericUnary($expr->expr, -1),
-            $expr instanceof Expr\UnaryPlus => $this->numericUnary($expr->expr, 1),
-            $expr instanceof Expr\BooleanNot => $this->booleanNot($expr),
-            $expr instanceof Expr\BinaryOp\Concat => $this->concat($expr),
-            $expr instanceof Expr\BinaryOp => $this->binary($expr),
-            $expr instanceof Expr\Ternary => $this->ternary($expr),
-            $expr instanceof Expr\PropertyFetch, $expr instanceof Expr\StaticPropertyFetch => $this->dynamicWithClasses($expr),
-            default => $this->dynamic(),
-        };
+        if (++$this->depth > self::MAX_DEPTH) {
+            --$this->depth;
+            throw new RuntimeException('Static config expression exceeds the 64-level evaluation depth limit.');
+        }
+
+        try {
+            return match (true) {
+                $expr instanceof Scalar\String_ => $this->literal($this->string($expr->value)),
+                $expr instanceof Scalar\Int_ => $this->literal($expr->value),
+                $expr instanceof Scalar\Float_ => $this->literal($expr->value),
+                $expr instanceof Expr\ConstFetch => $this->constant($expr),
+                $expr instanceof Expr\ClassConstFetch => $this->classConstant($expr),
+                $expr instanceof Expr\Variable => $this->variable($expr),
+                $expr instanceof Expr\FuncCall => $this->functionCall($expr),
+                $expr instanceof Expr\UnaryMinus => $this->numericUnary($expr->expr, -1),
+                $expr instanceof Expr\UnaryPlus => $this->numericUnary($expr->expr, 1),
+                $expr instanceof Expr\BooleanNot => $this->booleanNot($expr),
+                $expr instanceof Expr\BinaryOp\Concat => $this->concat($expr),
+                $expr instanceof Expr\BinaryOp => $this->binary($expr),
+                $expr instanceof Expr\Ternary => $this->ternary($expr),
+                $expr instanceof Expr\PropertyFetch, $expr instanceof Expr\StaticPropertyFetch => $this->dynamicWithClasses($expr),
+                default => $this->dynamic(),
+            };
+        } finally {
+            --$this->depth;
+        }
     }
 
     /** @param list<Node\Stmt> $statements */
@@ -51,6 +67,10 @@ final class StaticConfigEvaluator
             }
             $assign = $statement->expr;
             if ($assign->var instanceof Expr\Variable && is_string($assign->var->name)) {
+                if (!isset($this->variables[$assign->var->name]) && count($this->variables) >= self::MAX_VARIABLES) {
+                    throw new RuntimeException('Static config evaluation exceeds the 512-variable limit.');
+                }
+
                 $this->variables[$assign->var->name] = $this->evaluate($assign->expr);
             }
         }
@@ -245,7 +265,21 @@ final class StaticConfigEvaluator
 
     private function string(string $value): string
     {
-        return strlen($value) <= self::MAX_STRING_BYTES ? $value : substr($value, 0, self::MAX_STRING_BYTES);
+        if (preg_match('//u', $value) !== 1) {
+            throw new RuntimeException('Static config string literal must be valid UTF-8.');
+        }
+
+        if (strlen($value) <= self::MAX_STRING_BYTES) {
+            return $value;
+        }
+
+        $value = substr($value, 0, self::MAX_STRING_BYTES);
+
+        while ($value !== '' && preg_match('//u', $value) !== 1) {
+            $value = substr($value, 0, -1);
+        }
+
+        return $value;
     }
 
     /** @return EvalResult */
