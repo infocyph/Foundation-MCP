@@ -49,7 +49,7 @@ final class TempProject
     public static function remove(string $path): void
     {
         if (is_link($path) || is_file($path)) {
-            @unlink($path);
+            unlink($path);
 
             return;
         }
@@ -72,6 +72,6 @@ final class TempProject
             self::remove($path.DIRECTORY_SEPARATOR.$entry);
         }
 
-        @rmdir($path);
+        rmdir($path);
     }
 }

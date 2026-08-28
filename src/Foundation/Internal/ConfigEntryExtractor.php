@@ -192,14 +192,30 @@ final class ConfigEntryExtractor
     private function diagnostic(string $code, ?string $source, ?int $line, string $message): void
     {
         if (count($this->diagnostics) < self::MAX_DIAGNOSTICS) {
-            $this->diagnostics[] = compact('code', 'source', 'line', 'message');
+            $this->diagnostics[] = [
+                'code' => $code,
+                'source' => $source,
+                'line' => $line,
+                'message' => $message,
+            ];
         }
     }
 
     /** @return ConfigEntry */
     private function entry(string $key, string $layer, mixed $value, string $status, array $environment, array $classes, string $owner, string $source, int $line): array
     {
-        return compact('key', 'layer', 'value', 'status', 'environment', 'classes', 'owner', 'source', 'line') + ['effective' => false];
+        return [
+            'key' => $key,
+            'layer' => $layer,
+            'value' => $value,
+            'status' => $status,
+            'environment' => $environment,
+            'classes' => $classes,
+            'owner' => $owner,
+            'source' => $source,
+            'line' => $line,
+            'effective' => false,
+        ];
     }
 
     /** @param list<ConfigEntry> $entries */

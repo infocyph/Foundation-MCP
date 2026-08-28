@@ -80,7 +80,14 @@ final readonly class GitRunner
             1 => ['pipe', 'w'],
             2 => ['pipe', 'w'],
         ];
-        $process = @proc_open($command, $descriptors, $pipes, $this->project->root, null, ['bypass_shell' => true]);
+
+        set_error_handler(static fn(int $severity): bool => $severity === E_WARNING);
+        try {
+            $process = proc_open($command, $descriptors, $pipes, $this->project->root, null, ['bypass_shell' => true]);
+        } finally {
+            restore_error_handler();
+        }
+
         if (!is_resource($process)) {
             if ($allowFailure) {
                 return ['exit' => 127, 'stdout' => '', 'stderr' => 'Git is unavailable.'];

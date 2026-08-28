@@ -33,15 +33,21 @@ it('rejects traversal absolute paths and symlink escapes', function (): void {
         expect(fn () => $policy->projectFile('/etc/passwd'))->toThrow(RuntimeException::class);
 
         $link = $project.DIRECTORY_SEPARATOR.'escape';
+        set_error_handler(static fn(int $severity): bool => $severity === E_WARNING);
+        try {
+            $linked = is_string($outside) && symlink($outside, $link);
+        } finally {
+            restore_error_handler();
+        }
 
-        if (is_string($outside) && @symlink($outside, $link)) {
+        if ($linked) {
             expect(fn () => $policy->projectFile('escape'))->toThrow(RuntimeException::class);
         }
     } finally {
         TempProject::remove($project);
 
-        if (is_string($outside)) {
-            @unlink($outside);
+        if (is_string($outside) && file_exists($outside)) {
+            unlink($outside);
         }
     }
 });
