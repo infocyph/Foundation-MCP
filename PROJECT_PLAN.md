@@ -444,7 +444,7 @@ Foundation MCP statically extracts:
 - type references;
 - bounded literal arrays used by Foundation/module/config registration;
 - file/line locations;
-- per-reference confidence (`resolved`, `lexical`, `dynamic` at analyzer level; `exact` is added by later indexes where declaration identity is proven).
+- per-reference confidence (`resolved`, `lexical`, `dynamic` at analyzer level; `exact` is added by indexes where declaration identity is proven).
 
 The analyzer works in-process through the PHP parser supplied by the mandatory PHPForge dependency graph. It does not add a second direct parser dependency, does not shell out to PHPForge per file, does not retain full ASTs after compact extraction and does not execute host source.
 
@@ -604,7 +604,7 @@ The symbol index keeps compact per-file entries. A path/size/mtime/ctime metadat
 
 Per-file parser/analysis failures become bounded index diagnostics without preventing symbols from unrelated valid files from being returned.
 
-The reference index records relationships such as:
+The reference index reuses the same lazy source manifest/analyzer stack and records:
 
 ```text
 import
@@ -615,16 +615,13 @@ trait-use
 attribute
 type
 call
-route
-command
-provider
-config
-worker
-schedule
-test
+class_constant
+property
 ```
 
-Every reference carries confidence:
+Foundation-specific relationships such as route, command, provider, config, worker, schedule and test are added by their dedicated inspectors/relationship layers rather than guessed from generic PHP nodes.
+
+Every generic reference carries source path/line, owning source symbol when statically attributable, target, relationship and confidence:
 
 ```text
 exact
@@ -632,6 +629,10 @@ resolved
 lexical
 dynamic
 ```
+
+`exact` is promoted only when a unique compatible declaration exists in the current symbol index. Promotion is relationship/kind aware: a lexical method name is never made exact just because an unrelated global function has the same text. Duplicate declaration candidates therefore prevent exact promotion. Dynamic calls remain dynamic.
+
+Usage queries are deterministic, case-preserving with case-folded fallback, support relationship filtering and are hard-bounded to at most 500 results. Project usage indexing is lazy; package-internal usage indexing occurs only for an explicitly requested package. Reference entries refresh incrementally using the same manifest state, while declaration changes can still alter exact-confidence decoration without forcing unrelated files to be reparsed.
 
 Dynamic PHP that cannot be proven statically must be reported as unresolved rather than guessed.
 
@@ -1310,7 +1311,7 @@ The first release includes the entire intended scope; no desired capability is i
 [x] purpose-first module intelligence
 [x] PHPForge-backed AST/source analyzer
 [x] lazy symbol index
-[ ] lazy reference/usage index
+[x] lazy reference/usage index
 [ ] deterministic search/read
 [ ] related-test discovery
 [ ] route inspector
@@ -1369,7 +1370,8 @@ Update this checklist after each meaningful implementation chunk. Do not mark an
 - `feat: add Composer and Foundation package intelligence` — distinct declared/locked/installed package truth; runtime/dev direct dependencies; bounded transitive graph; source-reference and install-path state; `installed.json` normal path with root-proven `InstalledVersions` fallback; no `installed.php` execution; installed package composer metadata fallback; platform requirements; canonical package ownership/roots; Foundation exact-version diagnostics; lock/install mismatch diagnostics; focused unit coverage; PHP 8.4 syntax and standalone smoke validation.
 - `9b0844b5` — bounded static parsing of installed Foundation `ModuleCatalog::MODULES` through the PHPForge-provided PHP parser; literal-only evaluation with dynamic-expression rejection; module/alias/package resolution with ambiguity checks; Composer package/config correlation; built-in/package/config/runtime-activation-safe statuses; ModuleCatalog doctor gate; focused unit coverage added; PHP 8.4 syntax validation passed locally. The dependency-complete Pest/PHPForge suite remains for CI/integration validation.
 - `617c5e9d` — PHPForge-supplied in-process PHP parser backend; compact declarations/signatures/imports/inheritance/traits/attributes/PHPDoc extraction; promoted properties/constants/enum cases; resolved/lexical/dynamic reference extraction; bounded literal arrays; explicit-project and explicit-package path authorization; secret/file/size controls; file-local parse errors; content-fingerprint cache invalidation; focused unit coverage. Local PHP 8.4 syntax validation passed for the analyzer result/entry point and literal visitor; the dependency-complete Pest/PHPForge suite remains for CI/integration validation.
-- `feat: add lazy symbol index` — Composer/host-aware PHP source discovery; project-only lazy build; explicitly requested package-only lazy build; excluded/secret/symlink path filtering; compact symbol ownership/source metadata; deterministic exact/case-folded lookup with duplicate ambiguity preserved; incremental added/changed/removed file refresh; per-file parse/analysis diagnostics; focused unit coverage including no-op refresh and single-file invalidation. Local PHP 8.4 syntax probes passed for the new source-finder/index constructs; the dependency-complete Pest/PHPForge suite remains for CI/integration validation.
+- `e8ec06af` — Composer/host-aware PHP source discovery; project-only lazy symbol build; explicitly requested package-only lazy build; excluded/secret/symlink path filtering; compact symbol ownership/source metadata; deterministic exact/case-folded lookup with duplicate ambiguity preserved; incremental added/changed/removed file refresh; per-file parse/analysis diagnostics; focused unit coverage including no-op refresh and single-file invalidation. Local PHP 8.4 syntax probes passed for the new source-finder/index constructs; the dependency-complete Pest/PHPForge suite remains for CI/integration validation.
+- `feat: add lazy reference index` — lazy project/package reference indexing over the shared source manifest/analyzer; import/generic PHP relationships; source-symbol attribution; relationship/kind-aware unique-declaration promotion to exact confidence; lexical/dynamic preservation; deterministic bounded usage lookup with relationship filters; incremental refresh; per-file diagnostics; focused coverage for false-positive exactness, package usage and one-file invalidation. The dependency-complete Pest/PHPForge suite remains for CI/integration validation.
 
 The overall `mcp/sdk STDIO integration`, `explicit MCP registration`, `doctor command`, `lazy in-memory cache/invalidation` and broad test-suite checklist entries remain intentionally open until their complete production contracts are exercised across the relevant service/index/protocol/integration layers.
 

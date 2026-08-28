@@ -20,3 +20,5 @@ All notable changes to Foundation MCP will be documented in this file.
 - File-local parse-error isolation and content-fingerprint analysis caching for unchanged PHP source.
 - Lazy project/package symbol indexing with deterministic lookup, duplicate-symbol surfacing and per-file diagnostics.
 - Incremental symbol-index refresh using source metadata states so unchanged files are not reparsed.
+- Lazy project/package reference indexing with source-symbol attribution, relationship-aware exact-confidence upgrades and bounded usage queries.
+- Incremental usage refresh and per-file reference diagnostics without reparsing unchanged source.
