@@ -27,9 +27,10 @@ use Infocyph\FoundationMcp\Foundation\WorkerInspector;
 use Infocyph\FoundationMcp\Git\GitRunner;
 use Infocyph\FoundationMcp\Git\WorkspaceInspector;
 use Infocyph\FoundationMcp\Project\Project;
+use Infocyph\FoundationMcp\Project\ProjectDetector;
 use Infocyph\FoundationMcp\Resource\ResourceReader;
 
-/** Shared lazy domain services for the explicit MCP tool/resource surface. */
+/** Shared lazy domain services for the explicit MCP surface. */
 final class ToolServices
 {
     private ?ComposerInspector $composer = null;
@@ -53,29 +54,39 @@ final class ToolServices
     private ?WorkspaceInspector $workspace = null;
     private ?DependencyChangeAnalyzer $dependencies = null;
     private ?ImpactAnalyzer $impact = null;
+    private string $metadataState;
+
+    public Project $project;
 
     public function __construct(
-        public readonly Project $project,
+        Project $project,
+        private readonly bool $gitEnabled = true,
     ) {
+        $this->project = $project;
+        $this->metadataState = $this->currentMetadataState();
     }
 
     public function composer(): ComposerInspector
     {
+        $this->refreshMetadata();
         return $this->composer ??= new ComposerInspector($this->project);
     }
 
     public function analyzer(): PhpAnalyzer
     {
+        $this->refreshMetadata();
         return $this->analyzer ??= new PhpAnalyzer($this->project, $this->composer());
     }
 
     public function files(): SourceFileFinder
     {
+        $this->refreshMetadata();
         return $this->files ??= new SourceFileFinder($this->project, $this->composer());
     }
 
     public function symbols(): SymbolIndex
     {
+        $this->refreshMetadata();
         return $this->symbols ??= new SymbolIndex(
             $this->project,
             $this->composer(),
@@ -86,6 +97,7 @@ final class ToolServices
 
     public function references(): ReferenceIndex
     {
+        $this->refreshMetadata();
         return $this->references ??= new ReferenceIndex(
             $this->project,
             $this->composer(),
@@ -97,6 +109,7 @@ final class ToolServices
 
     public function tests(): TestLocator
     {
+        $this->refreshMetadata();
         return $this->tests ??= new TestLocator(
             $this->project,
             $this->composer(),
@@ -108,6 +121,7 @@ final class ToolServices
 
     public function search(): SearchEngine
     {
+        $this->refreshMetadata();
         return $this->search ??= new SearchEngine(
             $this->project,
             $this->composer(),
@@ -117,16 +131,19 @@ final class ToolServices
 
     public function reader(): ResourceReader
     {
+        $this->refreshMetadata();
         return $this->reader ??= new ResourceReader($this->project, $this->composer());
     }
 
     public function modules(): ModuleCatalogReader
     {
+        $this->refreshMetadata();
         return $this->modules ??= new ModuleCatalogReader($this->project, $this->composer());
     }
 
     public function routes(): RouteInspector
     {
+        $this->refreshMetadata();
         return $this->routes ??= new RouteInspector(
             $this->project,
             $this->composer(),
@@ -136,6 +153,7 @@ final class ToolServices
 
     public function commands(): CommandInspector
     {
+        $this->refreshMetadata();
         return $this->commands ??= new CommandInspector(
             $this->project,
             $this->composer(),
@@ -145,6 +163,7 @@ final class ToolServices
 
     public function providers(): ProviderInspector
     {
+        $this->refreshMetadata();
         return $this->providers ??= new ProviderInspector(
             $this->project,
             $this->composer(),
@@ -154,6 +173,7 @@ final class ToolServices
 
     public function config(): ConfigInspector
     {
+        $this->refreshMetadata();
         return $this->config ??= new ConfigInspector(
             $this->project,
             $this->composer(),
@@ -163,6 +183,7 @@ final class ToolServices
 
     public function workers(): WorkerInspector
     {
+        $this->refreshMetadata();
         return $this->workers ??= new WorkerInspector(
             new FoundationWorkerInspector($this->project, $this->composer()),
             new OmnibusWorkerInspector($this->project, $this->composer()),
@@ -171,16 +192,19 @@ final class ToolServices
 
     public function schedules(): ScheduleInspector
     {
+        $this->refreshMetadata();
         return $this->schedules ??= new ScheduleInspector($this->project, $this->composer());
     }
 
     public function runtime(): RuntimeInspector
     {
+        $this->refreshMetadata();
         return $this->runtime ??= new RuntimeInspector($this->project, $this->composer());
     }
 
     public function architecture(): ArchitectureInspector
     {
+        $this->refreshMetadata();
         return $this->architecture ??= new ArchitectureInspector(
             $this->project,
             $this->composer(),
@@ -192,11 +216,13 @@ final class ToolServices
 
     public function git(): GitRunner
     {
-        return $this->git ??= new GitRunner($this->project);
+        $this->refreshMetadata();
+        return $this->git ??= new GitRunner($this->project, enabled: $this->gitEnabled);
     }
 
     public function workspace(): WorkspaceInspector
     {
+        $this->refreshMetadata();
         return $this->workspace ??= new WorkspaceInspector(
             $this->project,
             $this->composer(),
@@ -208,6 +234,7 @@ final class ToolServices
 
     public function dependencies(): DependencyChangeAnalyzer
     {
+        $this->refreshMetadata();
         return $this->dependencies ??= new DependencyChangeAnalyzer(
             $this->project,
             $this->composer(),
@@ -218,6 +245,7 @@ final class ToolServices
 
     public function impact(): ImpactAnalyzer
     {
+        $this->refreshMetadata();
         return $this->impact ??= new ImpactAnalyzer(
             $this->project,
             $this->composer(),
@@ -227,5 +255,65 @@ final class ToolServices
             $this->workspace(),
             $this->dependencies(),
         );
+    }
+
+    private function refreshMetadata(): void
+    {
+        $state = $this->currentMetadataState();
+        if ($state === $this->metadataState) {
+            return;
+        }
+
+        $this->project = (new ProjectDetector())->detect($this->project->root);
+        $this->resetServices();
+        $this->metadataState = $this->currentMetadataState();
+    }
+
+    private function currentMetadataState(): string
+    {
+        return implode('|', array_map(
+            $this->fileState(...),
+            [
+                $this->project->root.DIRECTORY_SEPARATOR.'composer.json',
+                $this->project->root.DIRECTORY_SEPARATOR.'composer.lock',
+                $this->project->root.DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR.'composer'.DIRECTORY_SEPARATOR.'installed.json',
+            ],
+        ));
+    }
+
+    private function fileState(string $path): string
+    {
+        clearstatcache(true, $path);
+        $stat = @stat($path);
+        if (!is_array($stat)) {
+            return 'missing';
+        }
+
+        return $path.':'.$stat['size'].':'.$stat['mtime'].':'.$stat['ctime'];
+    }
+
+    private function resetServices(): void
+    {
+        $this->composer = null;
+        $this->analyzer = null;
+        $this->files = null;
+        $this->symbols = null;
+        $this->references = null;
+        $this->tests = null;
+        $this->search = null;
+        $this->reader = null;
+        $this->modules = null;
+        $this->routes = null;
+        $this->commands = null;
+        $this->providers = null;
+        $this->config = null;
+        $this->workers = null;
+        $this->schedules = null;
+        $this->runtime = null;
+        $this->architecture = null;
+        $this->git = null;
+        $this->workspace = null;
+        $this->dependencies = null;
+        $this->impact = null;
     }
 }

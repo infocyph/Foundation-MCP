@@ -21,12 +21,17 @@ final readonly class GitRunner
     public function __construct(
         private Project $project,
         private string $executable = 'git',
+        private bool $enabled = true,
     ) {
         $this->secrets = new SecretPolicy();
     }
 
     public function available(): bool
     {
+        if (!$this->enabled) {
+            return false;
+        }
+
         $result = $this->run(['--version'], allowFailure: true);
         return $result['exit'] === 0 && str_starts_with(trim($result['stdout']), 'git version ');
     }
@@ -59,7 +64,14 @@ final readonly class GitRunner
     /** @return array{exit:int,stdout:string,stderr:string} */
     private function run(array $arguments, bool $allowFailure = false): array
     {
-        $command = [$this->executable, '--no-pager', ...$arguments];
+        if (!$this->enabled) {
+            if ($allowFailure) {
+                return ['exit' => 127, 'stdout' => '', 'stderr' => 'Git inspection is disabled.'];
+            }
+            throw new RuntimeException('Git inspection is disabled.');
+        }
+
+        $command = [$this->executable, '--no-optional-locks', '--no-pager', ...$arguments];
         $descriptors = [
             0 => ['pipe', 'r'],
             1 => ['pipe', 'w'],

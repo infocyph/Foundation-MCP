@@ -33,10 +33,12 @@ it('reports bounded staged unstaged untracked rename and PHP API deltas without 
         file_put_contents($root.'/app/Service.php', "<?php\nnamespace App;\nfinal class Service { public function newMethod(): void {} }\n");
         workspaceGit($root, ['mv', 'app/Legacy.php', 'app/Renamed.php']);
         file_put_contents($root.'/config/app.php', "<?php return ['debug' => true];\n");
+        $indexBefore = hash_file('sha256', $root.'/.git/index');
 
         $project = (new ProjectDetector())->detect($root);
         $composer = new ComposerInspector($project);
         $result = (new WorkspaceInspector($project, $composer))->inspect();
+        $indexAfter = hash_file('sha256', $root.'/.git/index');
 
         expect($result['available'])->toBeTrue()
             ->and($result['dirty'])->toBeTrue()
@@ -48,9 +50,11 @@ it('reports bounded staged unstaged untracked rename and PHP API deltas without 
             ->and($result['changed_symbols'])->toContain('App\\Service::oldMethod', 'App\\Service::newMethod')
             ->and($result['affected_tests'])->toContain('tests/ServiceTest.php')
             ->and($result['areas'])->toContain('config')
-            ->and($result['composer_changed'])->toBeFalse();
+            ->and($result['composer_changed'])->toBeFalse()
+            ->and($indexAfter)->toBe($indexBefore);
 
-        expect(fn () => (new GitRunner($project))->headFile('../outside.php'))->toThrow(RuntimeException::class);
+        expect(fn () => (new GitRunner($project))->headFile('../outside.php'))->toThrow(RuntimeException::class)
+            ->and((new GitRunner($project, enabled: false))->available())->toBeFalse();
     } finally {
         TempProject::remove($root);
     }
