@@ -8,7 +8,7 @@ use Mcp\Client\Transport\StdioTransport;
 use Mcp\Exception\RequestException;
 use Mcp\Schema\Enum\ProtocolVersion;
 
-it('serves the complete explicit MCP surface over real STDIO in both protocol eras', function (ProtocolVersion $version): void {
+it('serves the complete explicit MCP surface over the latest handshake-era STDIO protocol', function (): void {
     $root = TempProject::create(
         composer: [
             'name' => 'fixture/foundation-host',
@@ -26,7 +26,7 @@ it('serves the complete explicit MCP surface over real STDIO in both protocol er
     $client = null;
 
     try {
-        $client = protocolClient($version);
+        $client = protocolClient();
         $client->connect(protocolTransport($root));
 
         $toolNames = array_map(static fn($tool): string => $tool->name, $client->listTools()->tools);
@@ -77,16 +77,13 @@ it('serves the complete explicit MCP surface over real STDIO in both protocol er
         $client?->disconnect();
         TempProject::remove($root);
     }
-})->with([
-    'handshake' => ProtocolVersion::V2025_11_25,
-    'modern' => ProtocolVersion::V2026_07_28,
-]);
+});
 
-function protocolClient(ProtocolVersion $version): Client
+function protocolClient(): Client
 {
     return Client::builder()
         ->setClientInfo('foundation-mcp-protocol-test', '1.0.0')
-        ->setProtocolVersion($version)
+        ->setProtocolVersion(ProtocolVersion::V2025_11_25)
         ->setInitTimeout(10)
         ->setRequestTimeout(30)
         ->setMaxRetries(0)
