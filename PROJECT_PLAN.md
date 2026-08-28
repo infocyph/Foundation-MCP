@@ -1390,7 +1390,7 @@ The first release includes the entire intended scope; no desired capability is i
 [ ] performance benchmarks
 [ ] Linux/Windows PHP 8.4/8.5 CI
 [ ] PHPForge full release gates
-[ ] README/security documentation
+[x] README/security documentation
 [ ] Infbyte require-dev integration
 [x] composer --no-dev zero-footprint validation
 ```
@@ -1422,9 +1422,13 @@ Update this checklist after each meaningful implementation chunk. Do not mark an
 - `2ea261b5` — runtime safety hardening: `--no-git` now propagates through server/doctor services; the only production subprocess boundary remains fixed read-only Git with argument vectors, `bypass_shell` and `--no-optional-locks`; all nine tool responses pass a 1 MiB serialization budget while resources retain their existing hard limits; shared lazy services invalidate and re-detect project/Composer state when `composer.json`, `composer.lock` or installed metadata changes; doctor now checks Git policy and explicit MCP surface construction; focused safety, output-budget, Composer-invalidation, doctor and Git-index immutability tests were added. Local PHP 8.4 syntax validation passed for every new/modified source and focused test file; dependency-complete Pest/PHPForge/MCP execution remains for the later verification phase.
 - `0d01b3d0` — replaces the generic variadic SDK tool wrapper with explicit reflection-compatible handler signatures for all nine tools, preserving the global output budget while matching `mcp/sdk v0.8.0` argument binding; removes the metadata-state `stat()` suppression warning. CI proves the real `2025-11-25` STDIO tool/resource path now executes successfully end-to-end, including required-input `foundation_search`.
 - `e2e18e2c` — aligns protocol coverage with the official SDK's actual transport lifecycle: the Foundation MCP STDIO contract tests `2025-11-25`; the SDK's `2026-07-28` server lifecycle is stateless HTTP and remains outside this package's deliberate STDIO-only/non-network boundary. Removes the one-shot branch self-push workflow after branch protection proved it could not be a valid plan-update mechanism.
+- `7c645edf` — removes warning suppression from the Git process boundary and test cleanup, replaces the first PHPForge `compact()` false-positive clusters with explicit evidence arrays, and preserves the fixed read-only Git command surface. CI after this commit proved all 41 Pest tests (86,372 assertions), PHPProbe, Deptrac, Rector and Composer normalization passed; remaining QA failures were formatting/PHPCS-only.
+- `8a3e6d83` — fixes the final Pint formatting blocker and normalizes Runtime/Route diagnostic evidence. Its PHPForge QA run proves Pest, Pint, PHPProbe, Deptrac, Rector and Composer normalization all pass, leaving only eight explicit `compact()` PHPCS sites plus the independent PHPStan analysis tranche.
+- `fed4b0ec` — replaces the remaining eight `compact()` diagnostic/reference builders with explicit keyed arrays across provider, config, command, worker, schedule, route-call and PHP-reference internals. This is behavior-preserving standards normalization; the full PHPForge gate remains open until CI proves PHPCS and subsequent static-analysis/release stages green.
+- README and `SECURITY.md` now cover the complete documentation contract: purpose/architecture, Infbyte/PHPForge `require-dev`, official SDK STDIO boundary, all nine tools/resources, exact-version/module semantics, launch/doctor flows, security invariants, output/performance budgets, troubleshooting, vulnerability reporting and zero production footprint. README's lifecycle wording is synchronized with the verified `mcp/sdk v0.8.0` transport boundary (`2025-11-25` STDIO; `2026-07-28` stateless HTTP only).
 - CI on the corrected branch proves the existing integration/ecosystem/security fixtures pass on PHP 8.4 prefer-stable and proves `composer install --no-dev` succeeds without the development-only MCP/PHPForge stack. The broad unit/integration/ecosystem checklist remains open until the complete matrix and remaining fixture classes are verified.
 
-The remaining release tranche is PHPForge standards cleanup, complete unit/integration/ecosystem matrix verification, performance benchmarks, Linux/Windows PHP 8.4/8.5 coverage, README/security documentation, Infbyte require-dev rollout and the full PHPForge release gate.
+The remaining release tranche is PHPStan/static-analysis cleanup, complete unit/integration/ecosystem matrix verification, executed performance benchmark baselines, green Linux/Windows PHP 8.4/8.5 coverage, the actual Infbyte require-dev rollout and the full PHPForge release gate.
 
 ---
 

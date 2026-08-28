@@ -101,7 +101,7 @@ A generic MCP client can launch the server with `php` and the installed binary p
 }
 ```
 
-The SDK serves both the `2025-11-25` handshake protocol era and the modern `2026-07-28` request-envelope era.
+With `mcp/sdk v0.8.0`, Foundation MCP's STDIO protocol contract is `2025-11-25`. The SDK's `2026-07-28` server lifecycle is stateless HTTP and deliberately remains outside this package's STDIO-only, zero-network server boundary.
 
 ## Tool surface
 
