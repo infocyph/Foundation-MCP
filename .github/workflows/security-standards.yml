@@ -1,0 +1,31 @@
+name: Security & Standards
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  security-events: write
+
+jobs:
+  phpforge:
+    uses: infocyph/phpforge/.github/workflows/security-standards.yml@main
+    with:
+      php_versions: '["8.4","8.5"]'
+      dependency_versions: '["prefer-lowest","prefer-stable"]'
+      run_analysis: true
+      run_svg_report: true
+      run_clean_install: true
+      fail_on_skipped_tests: true
+      integration_services: '[]'
+      service_topologies: '{}'
