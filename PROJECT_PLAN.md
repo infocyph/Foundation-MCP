@@ -580,7 +580,11 @@ Inspect `routes/schedule.php`, fluent timing/policy calls, stable schedule ident
 Keep distinct:
 
 1. Foundation application maintenance workers from `routes/workers.php` / `WorkerProvider`;
-2. Omnibus messaging workers configured through messaging config.
+2. Omnibus messaging workers configured through `config/messaging.php`.
+
+`FoundationWorkerInspector` reads only the canonical maintenance-worker source, accepts bounded static array/provider-callback declarations, preserves conditional/dynamic registrations, reports the installed Foundation version, and redacts literal worker options without executing workers or Foundation.
+
+`OmnibusWorkerInspector` never infers queue workers from arbitrary classes. It reads worker/worker-group keys only from `config/messaging.php`, reuses the redacting config extractor, and derives the available worker option-field contract from the explicitly authorized installed `infocyph/omnibus` `WorkerOptions` constructor. `WorkerInspector` returns the two categories under separate `foundation_workers` and `omnibus_workers` keys so callers cannot accidentally collapse maintenance and messaging semantics.
 
 ### Runtime/bootstrap
 
@@ -1109,6 +1113,8 @@ Foundation-MCP/
 │   │   ├── CommandInspector.php
 │   │   ├── ProviderInspector.php
 │   │   ├── ConfigInspector.php
+│   │   ├── FoundationWorkerInspector.php
+│   │   ├── OmnibusWorkerInspector.php
 │   │   ├── WorkerInspector.php
 │   │   ├── ScheduleInspector.php
 │   │   └── RuntimeInspector.php
@@ -1156,7 +1162,7 @@ Foundation-MCP/
 └── PROJECT_PLAN.md
 ```
 
-Avoid interfaces/classes created only for symmetry. Introduce abstractions only at real replaceable/testing boundaries. `ComposerMetadataReader` is an intentional boundary between bounded raw Composer artifact acquisition and semantic package/graph correlation; it keeps file/runtime metadata mechanics out of `ComposerInspector`. `SourceFileFinder` is the shared PHP source-manifest boundary used by the lazy symbol/reference indexes; it centralizes PHP-source exclusion, secret, symlink and Composer-autoload discovery. `SearchEngine` owns a separate bounded text/resource discovery path because search also covers non-PHP project/config/route/doc files and must not force AST parsing. `ResourceReader` is the single safe line-range read service reused by later MCP read/resource handlers. `TestLocator` is a ranking layer over the existing indexes/source manifest rather than another parser/index.
+Avoid interfaces/classes created only for symmetry. Introduce abstractions only at real replaceable/testing boundaries. `ComposerMetadataReader` is an intentional boundary between bounded raw Composer artifact acquisition and semantic package/graph correlation; it keeps file/runtime metadata mechanics out of `ComposerInspector`. `SourceFileFinder` is the shared PHP source-manifest boundary used by the lazy symbol/reference indexes; it centralizes PHP-source exclusion, secret, symlink and Composer-autoload discovery. `SearchEngine` owns a separate bounded text/resource discovery path because search also covers non-PHP project/config/route/doc files and must not force AST parsing. `ResourceReader` is the single safe line-range read service reused by later MCP read/resource handlers. `TestLocator` is a ranking layer over the existing indexes/source manifest rather than another parser/index. `WorkerInspector` is a deliberate semantic aggregator: its two concrete inspectors preserve Foundation maintenance-worker and Omnibus messaging-worker ownership instead of creating a generic worker abstraction.
 
 ---
 
@@ -1332,9 +1338,9 @@ The first release includes the entire intended scope; no desired capability is i
 [x] command inspector
 [x] provider inspector
 [x] config inspector
-[ ] schedule inspector
-[ ] Foundation maintenance-worker inspector
-[ ] Omnibus worker distinction
+[x] schedule inspector
+[x] Foundation maintenance-worker inspector
+[x] Omnibus worker distinction
 [ ] runtime/bootstrap inspector
 [ ] Git workspace inspector
 [ ] dependency-change analyzer
@@ -1392,6 +1398,9 @@ Update this checklist after each meaningful implementation chunk. Do not mark an
 - `d91db26c` — static `routes/console.php` command registration inspection plus non-executing `CommandDefinition::define()` metadata extraction for command names, aliases, descriptions, groups, runtime, capabilities, visibility, arguments/options and dynamic/conditional definitions; command inspector files are attached at their canonical paths.
 - `59dae9cf` — static `bootstrap/providers.php` inspection with provider groups derived from the installed Foundation contract, common/runtime effective provider graphs, declaration deduplication, project symbol/Composer ownership metadata, dynamic-state preservation and no provider instantiation.
 - `f9ffb2a5` — static Foundation configuration inspection across installed default sources, project config, selected preset and inline bootstrap configuration using the installed runtime precedence; bounded AST evaluation records literal/default/env/class/source evidence, preserves dynamic state, applies project/package path authorization and redacts secret-looking values without loading `.env` or bootstrapping the application.
+- `385648e8` — static `routes/schedule.php` inspection with installed Foundation schedule/fluent contracts, command arguments, cron shortcuts, timezone/key identity, overlap/single-server locking, timeout/memory policy, conditional/dynamic state and bounded non-executing source analysis.
+- `0875871e`, `7816c2b5` — Foundation maintenance-worker inspection limited to `routes/workers.php`, supporting bounded static array/provider-callback declarations, conditional/dynamic status, Foundation-version evidence and recursive secret redaction without worker/application execution.
+- `1172426e`, `3666c446` — Omnibus messaging-worker inspection limited to `config/messaging.php`, worker/default-worker grouping, installed `WorkerOptions` promoted-field schema derivation through the explicitly authorized Omnibus package root, and an explicit two-category `WorkerInspector` result that prevents maintenance/messaging worker conflation.
 
 The overall `mcp/sdk STDIO integration`, `explicit MCP registration`, `doctor command`, `bounded output`, `lazy in-memory cache/invalidation` and broad test-suite checklist entries remain intentionally open until their complete production contracts are exercised across the relevant service/index/protocol/integration layers.
 
