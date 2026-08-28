@@ -3,8 +3,8 @@
 declare(strict_types=1);
 
 $root = dirname(__DIR__, 2);
-$planPath = $root.DIRECTORY_SEPARATOR.'PROJECT_PLAN.md';
-$changelogPath = $root.DIRECTORY_SEPARATOR.'CHANGELOG.md';
+$planPath = $root . DIRECTORY_SEPARATOR . 'PROJECT_PLAN.md';
+$changelogPath = $root . DIRECTORY_SEPARATOR . 'CHANGELOG.md';
 
 $plan = file_get_contents($planPath);
 $changelog = file_get_contents($changelogPath);
@@ -114,6 +114,19 @@ replaceExactly(
     $plan,
     '2. Foundation MCP directly requires `composer-runtime-api ^2.1`, `infocyph/phpforge: dev-main@dev` and `mcp/sdk ^0.8.0`.',
     '2. Foundation MCP directly requires `composer-runtime-api ^2.1` and `mcp/sdk ^0.8.0`, keeps `infocyph/phpforge: dev-main@dev` in `require-dev`, and refuses MCP startup when PHPForge/parser capability is unavailable.',
+    'PROJECT_PLAN.md',
+);
+
+replaceExactly(
+    $plan,
+    <<<'OLD'
+The overall `mcp/sdk STDIO integration`, `explicit MCP registration` and broad test-suite/release-gate checklist entries remain intentionally open until their complete production contracts are exercised across protocol/integration/ecosystem/CI layers.
+OLD,
+    <<<'NEW'
+- `fix: make MCP tool handlers protocol-compatible` — replaces the generic variadic SDK tool wrapper with explicit reflection-compatible handler signatures for all nine tools, preserving the global output budget while matching `mcp/sdk` 0.8 argument binding; removes the metadata-state `stat()` suppression warning and cleans the protocol client fixture signature. The protocol checklist remains open until the corrected STDIO contract is observed passing in CI.
+
+The overall `mcp/sdk STDIO integration`, `explicit MCP registration` and broad test-suite/release-gate checklist entries remain intentionally open until their complete production contracts are exercised across protocol/integration/ecosystem/CI layers.
+NEW,
     'PROJECT_PLAN.md',
 );
 

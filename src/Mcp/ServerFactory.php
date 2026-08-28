@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Infocyph\FoundationMcp\Mcp;
 
+use Closure;
 use Infocyph\FoundationMcp\Application;
 use Infocyph\FoundationMcp\Diagnostics\RuntimeRequirements;
 use Infocyph\FoundationMcp\Mcp\Resource\ArchitectureResource;
@@ -25,6 +26,7 @@ use Infocyph\FoundationMcp\Mcp\Tool\SymbolTool;
 use Infocyph\FoundationMcp\Mcp\Tool\ToolServices;
 use Infocyph\FoundationMcp\Mcp\Tool\UsagesTool;
 use Infocyph\FoundationMcp\Project\Project;
+use LogicException;
 use Mcp\Schema\ToolAnnotations;
 use Mcp\Server;
 
@@ -54,15 +56,21 @@ final readonly class ServerFactory
             ));
 
         $annotations = new ToolAnnotations(readOnlyHint: true, destructiveHint: false, openWorldHint: false);
-        foreach ([
-            new ProjectTool($services), new SearchTool($services), new ReadTool($services),
-            new SymbolTool($services), new UsagesTool($services), new InspectTool($services),
-            new PackagesTool($services), new ChangesTool($services), new ImpactTool($services),
-        ] as $tool) {
-            $handler = static fn(...$arguments): array => $budget->tool($tool->execute(...$arguments));
+        $tools = [
+            new ProjectTool($services),
+            new SearchTool($services),
+            new ReadTool($services),
+            new SymbolTool($services),
+            new UsagesTool($services),
+            new InspectTool($services),
+            new PackagesTool($services),
+            new ChangesTool($services),
+            new ImpactTool($services),
+        ];
 
+        foreach ($tools as $tool) {
             $builder->addTool(
-                handler: $handler,
+                handler: $this->toolHandler($tool, $budget),
                 name: $tool::NAME,
                 description: $tool::DESCRIPTION,
                 annotations: $annotations,
@@ -82,5 +90,51 @@ final readonly class ServerFactory
             ->addResourceTemplate([new SymbolResource($services), 'execute'], 'foundation://symbol/{symbol}', 'symbol', description: 'Exact bounded PHP symbol declaration/signature/source information.', mimeType: 'application/json');
 
         return $builder->build();
+    }
+
+    private function toolHandler(
+        ProjectTool|SearchTool|ReadTool|SymbolTool|UsagesTool|InspectTool|PackagesTool|ChangesTool|ImpactTool $tool,
+        OutputBudget $budget,
+    ): Closure {
+        return match (true) {
+            $tool instanceof ProjectTool => static fn(): array => $budget->tool($tool->execute()),
+            $tool instanceof SearchTool => static fn(
+                string $query,
+                string $scope = 'project',
+                string $kind = 'auto',
+                ?string $package = null,
+                int $limit = 20,
+            ): array => $budget->tool($tool->execute($query, $scope, $kind, $package, $limit)),
+            $tool instanceof ReadTool => static fn(
+                string $path,
+                string $scope = 'project',
+                ?string $package = null,
+                int $start_line = 1,
+                ?int $end_line = null,
+            ): array => $budget->tool($tool->execute($path, $scope, $package, $start_line, $end_line)),
+            $tool instanceof SymbolTool => static fn(
+                string $symbol,
+                ?string $package = null,
+            ): array => $budget->tool($tool->execute($symbol, $package)),
+            $tool instanceof UsagesTool => static fn(
+                string $symbol,
+                ?string $package = null,
+                ?array $relationships = null,
+                int $limit = 100,
+            ): array => $budget->tool($tool->execute($symbol, $package, $relationships, $limit)),
+            $tool instanceof InspectTool => static fn(string $kind): array => $budget->tool($tool->execute($kind)),
+            $tool instanceof PackagesTool => static fn(
+                ?string $package = null,
+                int $depth = 2,
+                int $limit = 100,
+            ): array => $budget->tool($tool->execute($package, $depth, $limit)),
+            $tool instanceof ChangesTool => static fn(): array => $budget->tool($tool->execute()),
+            $tool instanceof ImpactTool => static fn(
+                string $kind,
+                ?string $target = null,
+                int $limit = 100,
+            ): array => $budget->tool($tool->execute($kind, $target, $limit)),
+            default => throw new LogicException('Unsupported MCP tool handler.'),
+        };
     }
 }

@@ -26,10 +26,10 @@ it('serves the complete explicit MCP surface over real STDIO in both protocol er
     $client = null;
 
     try {
-        $client = protocolClient($root, $version);
+        $client = protocolClient($version);
         $client->connect(protocolTransport($root));
 
-        $toolNames = array_map(static fn ($tool): string => $tool->name, $client->listTools()->tools);
+        $toolNames = array_map(static fn($tool): string => $tool->name, $client->listTools()->tools);
         expect($toolNames)->toBe([
             'foundation_project',
             'foundation_search',
@@ -42,7 +42,7 @@ it('serves the complete explicit MCP surface over real STDIO in both protocol er
             'foundation_impact',
         ]);
 
-        $resourceUris = array_map(static fn ($resource): string => $resource->uri, $client->listResources()->resources);
+        $resourceUris = array_map(static fn($resource): string => $resource->uri, $client->listResources()->resources);
         expect($resourceUris)->toBe([
             'foundation://project/summary',
             'foundation://project/architecture',
@@ -51,7 +51,7 @@ it('serves the complete explicit MCP surface over real STDIO in both protocol er
             'foundation://project/standards',
         ]);
 
-        $templates = array_map(static fn ($template): string => $template->uriTemplate, $client->listResourceTemplates()->resourceTemplates);
+        $templates = array_map(static fn($template): string => $template->uriTemplate, $client->listResourceTemplates()->resourceTemplates);
         expect($templates)->toBe([
             'foundation://project/file/{path}',
             'foundation://package/{package}/file/{path}',
@@ -71,8 +71,8 @@ it('serves the complete explicit MCP surface over real STDIO in both protocol er
         expect($read->contents)->toHaveCount(1)
             ->and($read->contents[0]->text)->toContain('# Fixture');
 
-        expect(fn () => $client->callTool('foundation_missing', []))->toThrow(RequestException::class);
-        expect(array_map(static fn ($tool): string => $tool->name, $client->listTools()->tools))->toBe($toolNames);
+        expect(fn() => $client->callTool('foundation_missing', []))->toThrow(RequestException::class);
+        expect(array_map(static fn($tool): string => $tool->name, $client->listTools()->tools))->toBe($toolNames);
     } finally {
         $client?->disconnect();
         TempProject::remove($root);
@@ -82,7 +82,7 @@ it('serves the complete explicit MCP surface over real STDIO in both protocol er
     'modern' => ProtocolVersion::V2026_07_28,
 ]);
 
-function protocolClient(string $root, ProtocolVersion $version): Client
+function protocolClient(ProtocolVersion $version): Client
 {
     return Client::builder()
         ->setClientInfo('foundation-mcp-protocol-test', '1.0.0')
@@ -97,7 +97,7 @@ function protocolTransport(string $root): StdioTransport
 {
     return new StdioTransport(
         command: PHP_BINARY,
-        args: [dirname(__DIR__, 2).'/bin/foundation-mcp', 'serve', '--root='.$root, '--no-git'],
+        args: [dirname(__DIR__, 2) . '/bin/foundation-mcp', 'serve', '--root=' . $root, '--no-git'],
         cwd: dirname(__DIR__, 2),
     );
 }

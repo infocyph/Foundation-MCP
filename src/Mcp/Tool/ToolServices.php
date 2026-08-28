@@ -311,9 +311,13 @@ final class ToolServices
     private function fileState(string $path): string
     {
         clearstatcache(true, $path);
-        $stat = @stat($path);
-        if (!is_array($stat)) {
+        if (!file_exists($path)) {
             return 'missing';
+        }
+
+        $stat = stat($path);
+        if (!is_array($stat)) {
+            return 'unreadable';
         }
 
         $size = is_int($stat['size'] ?? null) ? $stat['size'] : 0;
