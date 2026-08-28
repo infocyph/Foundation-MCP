@@ -3,31 +3,32 @@
 > Repository: `infocyph/Foundation-MCP`  
 > Composer package: `infocyph/foundation-mcp`  
 > Primary consumer: `infocyph/infbyte` through `require-dev`  
-> Protocol implementation: official `mcp/sdk` PHP SDK  
-> Status: source-of-truth implementation plan for the first production-grade release
+> MCP implementation: official `mcp/sdk` PHP SDK  
+> Required development-intelligence substrate: `infocyph/phpforge`  
+> Status: implementation source of truth for the first production-grade release
 
 ---
 
-## 1. Purpose
+## 1. Mission
 
-Foundation MCP is the local Model Context Protocol development-intelligence server for applications built on Infocyph Foundation.
+Foundation MCP is the local Model Context Protocol development-intelligence server for Infbyte applications and other projects that directly host Infocyph Foundation.
 
-Its job is to give an AI coding agent precise, bounded, version-correct and safe knowledge of:
+Its job is to give an AI coding agent precise, bounded, version-correct and safe knowledge of the project it is currently working on:
 
-- the current Infbyte/Foundation host project;
-- the exact Foundation version actually installed;
-- the exact Infocyph packages actually installed;
+- the application source tree;
+- the exact Foundation version installed;
+- the exact Infocyph packages installed;
 - Foundation's purpose-first module model;
-- application source, routes, commands, providers, configuration, workers and schedules;
-- PHP symbols and references;
-- Composer dependency relationships;
-- current Git workspace changes;
-- likely impact of code, configuration, module and dependency changes;
-- relevant tests and project standards.
+- Composer dependencies and package ownership;
+- PHP declarations, signatures and usages;
+- routes, commands, providers, config, workers and schedules;
+- Foundation runtime/bootstrap relationships;
+- Git workspace changes;
+- dependency-change impact;
+- related tests;
+- project/Foundation development standards.
 
-Foundation MCP is a deterministic context and analysis layer. It is not an AI model and must not perform LLM reasoning internally.
-
-The design target is:
+Foundation MCP is a deterministic context and static-analysis layer. The AI client remains responsible for reasoning, code generation, editing and execution.
 
 ```text
 AI coding agent
@@ -36,24 +37,23 @@ AI coding agent
       v
 Foundation MCP
       |
-      +-- project source
-      +-- Foundation source
+      +-- host project
+      +-- installed Foundation
       +-- installed package source
       +-- Composer metadata
+      +-- PHPForge analysis stack
       +-- Foundation module semantics
       +-- Git workspace
-      +-- project documentation / standards
+      +-- local docs/standards
 ```
-
-The AI agent reasons and edits. Foundation MCP observes, resolves and explains.
 
 ---
 
-## 2. Canonical Distribution Model
+## 2. Canonical Infbyte Integration
 
-Foundation MCP is a development dependency of Infbyte.
+Foundation MCP is a **development dependency of Infbyte**.
 
-Infbyte should contain:
+Infbyte should ultimately contain:
 
 ```json
 {
@@ -68,270 +68,222 @@ Infbyte should contain:
 }
 ```
 
-This is the primary installation model.
+Keeping PHPForge explicitly in Infbyte is intentional even though Foundation MCP also requires it: Infbyte itself uses PHPForge as its QA/release toolchain, while Foundation MCP uses PHPForge as its mandatory source-analysis substrate.
 
-New applications created from Infbyte therefore receive Foundation MCP automatically in development environments.
-
-Production deployment remains naturally clean:
+Production installation remains clean:
 
 ```bash
 composer install --no-dev
 ```
 
-must remove Foundation MCP entirely and leave no runtime registration, service provider, route, worker, cache, bootstrap hook or application behavior behind.
+must remove Foundation MCP and PHPForge entirely from the application runtime.
 
-Direct installation into a custom Foundation host may be documented as a secondary usage:
+Foundation MCP must add no service provider, route, module, config file, worker, schedule, bootstrap hook or production dependency to Infbyte/Foundation.
+
+Direct installation into another Foundation host is supported as a secondary path:
 
 ```bash
 composer require --dev infocyph/foundation-mcp
 ```
 
-but the package is optimized and tested first against the Infbyte development model.
+---
+
+## 3. Mandatory Package Dependencies
+
+Foundation MCP is itself development tooling, but the dependencies it needs **while the MCP server is running** belong in its Composer `require` section.
+
+The required package contract is:
+
+```json
+{
+    "require": {
+        "php": "^8.4",
+        "mcp/sdk": "^0.8.0",
+        "infocyph/phpforge": "dev-main@dev"
+    }
+}
+```
+
+`infocyph/phpforge` is **not** `require-dev` for Foundation MCP. It is a hard operational dependency of Foundation MCP.
+
+Foundation MCP must not duplicate parser/static-analysis/refactoring/testing packages that PHPForge already provides through its toolchain. In particular, do not separately require packages merely because they are used internally by PHPForge's analysis stack, including PHP parser, Rector, PHPStan, Psalm, Symfony Process, Pest, PHPCS, Pint or benchmark tooling.
+
+The hard rule is:
+
+> Foundation MCP depends on the PHPForge toolchain as one unit. It does not recreate PHPForge's dependency graph.
+
+`foundation-mcp doctor` and CI must verify that the PHPForge installation provides the parser/analysis capabilities Foundation MCP requires. A broken/incomplete PHPForge installation is an invalid Foundation MCP environment, not a reason to silently downgrade analysis quality.
+
+Foundation MCP itself should have no extra `require-dev` package unless a future test/build need cannot be supplied by PHPForge. For this release, the target is no additional dev dependency.
 
 ---
 
-## 3. Package Boundary
+## 4. Why PHPForge Is a Runtime Dependency of the MCP
+
+Foundation MCP requires PHPForge for the development intelligence it exposes, not merely for maintaining Foundation MCP's own repository.
+
+PHPForge supplies the surrounding analysis ecosystem required for production-grade project understanding, including its PHP-parser compatibility support and the parser/refactoring/static-analysis packages brought by its toolchain.
+
+Foundation MCP should use that environment for:
+
+- PHP AST parsing;
+- source declaration extraction;
+- reference/usage extraction;
+- parser compatibility handling;
+- code-quality/standards context where appropriate;
+- release/CI validation of Foundation MCP itself.
+
+Foundation MCP must not shell out to PHPForge for every source query. Analysis remains in-process where practical for performance. PHPForge is the mandatory dependency substrate; Foundation MCP owns the MCP-oriented indexing/query semantics.
+
+---
+
+## 5. Official MCP SDK Boundary
 
 Foundation MCP uses the official PHP MCP SDK directly.
 
-There will be no intermediate `infocyph/mcp` abstraction in this project.
-
-Dependency direction:
+There is no `infocyph/mcp` abstraction between Foundation MCP and the official SDK.
 
 ```text
 mcp/sdk
    ^
    |
-infocyph/foundation-mcp
+Foundation MCP
    ^
    | require-dev
    |
-infocyph/infbyte
-   |
-   +-- infocyph/foundation
+Infbyte
 ```
 
-Foundation MCP must not require Foundation itself.
+Use `mcp/sdk ^0.8.0`, which supports the current MCP `2026-07-28` protocol revision and compatibility with the prior protocol era.
 
-It observes the Foundation version installed by the host application. This prevents the development tool from influencing or constraining the application's Foundation dependency resolution.
-
-The same rule applies to specialist Infocyph packages: Foundation MCP must not require CacheLayer, DBLayer, Omnibus, TalkingBytes, OTP, Pathwise, ReqShield, EpiCrypt, ArrayKit, InterMix, UID or Webrick merely to inspect them.
-
----
-
-## 4. Official MCP SDK Contract
-
-Use:
-
-```json
-"mcp/sdk": "^0.8.0"
-```
-
-The selected SDK line supports the current MCP `2026-07-28` protocol revision, stateless-era protocol semantics and compatibility with the earlier protocol era.
-
-Foundation MCP will use the SDK for:
+Use the SDK for:
 
 - server lifecycle;
 - protocol negotiation;
-- JSON-RPC handling;
-- tool registration;
-- resources and resource templates;
-- schemas;
+- JSON-RPC;
 - STDIO transport;
-- structured content where negotiated;
-- cancellation/error propagation supported by the SDK.
+- tools;
+- resources/resource templates;
+- schemas/structured content;
+- errors/cancellation behavior supported by the SDK.
 
-SDK-specific code must remain isolated under `src/Mcp/` so an SDK update does not leak protocol classes through analysis/domain code.
+All SDK-specific code remains under `src/Mcp/`; domain/project-analysis code must not be polluted with protocol concerns.
 
-The SDK is pre-1.0, therefore Foundation MCP must cover its own SDK integration with protocol and integration tests instead of assuming API stability.
+Because the SDK remains pre-1.0, Foundation MCP must cover its integration with protocol-level tests and must not assume future source compatibility.
 
 ---
 
-## 5. MCP Registration Strategy
+## 6. MCP Registration Strategy
 
-Use explicit/manual registration for the fixed Foundation MCP surface.
+Register the Foundation MCP surface explicitly with the official SDK.
 
-Do not use filesystem-wide SDK discovery.
+Do not use filesystem-wide MCP capability discovery.
 
 Reasons:
 
-- the server exposes a small known capability set;
-- startup remains deterministic;
-- no SDK discovery scan is needed;
-- no extra Finder dependency is needed;
-- names, schemas and descriptions remain explicit and reviewable;
-- tool registration cannot change merely because a new PHP class was added.
+- the capability set is intentionally small and stable;
+- startup is deterministic;
+- schemas/descriptions remain reviewable;
+- no discovery scan is required;
+- accidental addition of a PHP class cannot alter public MCP capabilities.
 
-Each MCP element must have:
-
-- explicit stable name;
-- explicit description;
-- explicit input schema where inference would be ambiguous;
-- bounded output contract;
-- tests for successful and invalid input.
+Every exposed element must have an explicit stable name, description, input schema, output contract and server-side result limits.
 
 ---
 
-## 6. Runtime Transport
+## 7. Transport and Network Policy
 
-Foundation MCP is local and STDIO-only.
+Foundation MCP is local and **STDIO-only**.
 
 Executable:
 
-```text
+```bash
 vendor/bin/foundation-mcp
 ```
 
-Equivalent explicit command:
+Explicit form:
 
-```text
+```bash
 vendor/bin/foundation-mcp serve
 ```
 
-STDOUT is reserved exclusively for MCP protocol traffic.
+STDOUT is protocol-only. Diagnostics/logging go to STDERR.
 
-Diagnostics go to STDERR.
+Normal operation performs **zero network calls**. It must not automatically contact GitHub, Packagist, Composer repositories, Infocyph servers, telemetry endpoints, analytics services or remote documentation.
 
-No HTTP transport is exposed by this package.
-
-This is deliberate because Foundation MCP works with private local source, uncommitted code and local Composer state. A remote development-information server would create additional authentication, exposure and data-governance concerns without improving the primary Infbyte use case.
-
----
-
-## 7. Zero-Network Normal Operation
-
-Normal MCP operation performs no network calls.
-
-It must not automatically contact:
-
-- GitHub;
-- Packagist;
-- Composer repositories;
-- Infocyph websites;
-- telemetry services;
-- analytics services;
-- update servers;
-- remote documentation endpoints.
-
-Authoritative context comes from the local development installation:
+The authoritative state is local:
 
 ```text
 working tree
 composer.json
 composer.lock
 Composer installed metadata
-vendor package source
-Foundation package source
-local docs
+installed Foundation source
+installed package source
+local documentation
 Git metadata
 ```
 
-This guarantees that generated advice can target what the application actually has installed instead of an unrelated latest upstream version.
+No HTTP MCP server is part of this package.
 
 ---
 
-## 8. Foundation Dependency Model to Understand
+## 8. Foundation and Specialist-Package Boundary
 
-Foundation currently owns the composition/runtime layer and has these direct runtime package relationships:
+Foundation MCP must **not require `infocyph/foundation` itself**. It inspects whichever Foundation version is installed by the host application.
 
-```text
-infocyph/foundation
-  +-- infocyph/arraykit ^5.1.1
-  +-- infocyph/intermix ^9.2
-  +-- infocyph/uid ^5.0
-  +-- infocyph/webrick ^4.0.2
-  +-- psr/log ^3.0.2
-```
+The same applies to specialist packages: Foundation MCP must not require them merely for inspection.
 
-Foundation's optional purpose-first modules are represented by its installed `ModuleCatalog`, currently including:
+Current Foundation runtime dependencies include:
 
 ```text
-auth
-  - infocyph/otp ^6.0
-  - web-auth/webauthn-lib ^5.3.5
-
-cache
-  - infocyph/cachelayer ^3.2.0
-
-communication
-  - infocyph/talkingbytes ^2.0
-
-database
-  - infocyph/dblayer ^5.0
-
-filesystem
-  - infocyph/pathwise ^3.1
-
-logging
-  - Foundation built-in
-
-messaging
-  - infocyph/omnibus ^2.5
-
-operations
-  - Foundation built-in
-
-resources
-  - Foundation built-in
-
-security
-  - infocyph/epicrypt ^2.1
-
-session
-  - Foundation built-in
-
-validation
-  - infocyph/reqshield ^3.1
+infocyph/arraykit ^5.1.1
+infocyph/intermix ^9.2
+infocyph/uid ^5.0
+infocyph/webrick ^4.0.2
+psr/log ^3.0.2
 ```
 
-This table is architectural documentation, not a runtime hardcoded registry in Foundation MCP.
+Current purpose-first module packages include:
 
-The MCP must derive the active catalog from the installed Foundation source whenever possible so package constraints, aliases, config ownership and schema ownership remain correct for the exact Foundation version in the project.
+```text
+auth          -> infocyph/otp ^6.0 + web-auth/webauthn-lib ^5.3.5
+cache         -> infocyph/cachelayer ^3.2.0
+communication -> infocyph/talkingbytes ^2.0
+database      -> infocyph/dblayer ^5.0
+filesystem    -> infocyph/pathwise ^3.1
+logging       -> Foundation built-in
+messaging     -> infocyph/omnibus ^2.5
+operations    -> Foundation built-in
+resources     -> Foundation built-in
+security      -> infocyph/epicrypt ^2.1
+session       -> Foundation built-in
+validation    -> infocyph/reqshield ^3.1
+```
 
-Transitive package relationships must be read dynamically from Composer metadata rather than duplicated in Foundation MCP.
+These values document the current graph; they are not a second mutable registry inside Foundation MCP.
+
+At runtime, the exact package/module truth must be derived from the installed Foundation/Composer state.
 
 ---
 
-## 9. Purpose-First Module Semantics
+## 9. Purpose-First Module Intelligence
 
 Foundation modules represent application purposes, not package names.
 
-Foundation MCP must preserve that distinction.
-
-For example:
-
-```text
-module: database
-backing package: infocyph/dblayer
-```
-
-and:
-
-```text
-module: auth
-backing packages:
-  infocyph/otp
-  web-auth/webauthn-lib
-```
-
-The module inspector must understand:
+Foundation MCP must statically read the installed Foundation `ModuleCatalog` and extract:
 
 - canonical module name;
 - aliases;
 - description;
-- required package constraints;
-- built-in status;
-- owned/publishable configuration files;
-- owned schemas;
-- whether required packages are installed;
-- whether project config files are present;
-- whether static evidence exists for use.
+- package constraints;
+- built-in flag;
+- config files;
+- schema ownership.
 
-It must not equate package installation with runtime activation.
+It must then correlate the catalog with local Composer/project state.
 
-Foundation intentionally keeps package presence separate from lazy capability activation.
-
-Use status language such as:
+Useful statuses include:
 
 ```text
 cataloged
@@ -344,15 +296,29 @@ statically_referenced
 runtime_activation_unknown
 ```
 
-Do not report an optional capability as "active" merely because its package exists in `vendor/`.
+Never equate package presence with runtime activation. Foundation capabilities are lazy and package presence alone is not activation.
+
+Do not execute `ModuleCatalog` or bootstrap Foundation just to read it; parse installed source statically through the PHPForge-provided parser stack.
 
 ---
 
-## 10. Foundation Architecture Knowledge
+## 10. Foundation Architecture Semantics
 
-Foundation MCP must model the current Foundation architecture correctly.
+Foundation MCP must understand and expose the real ownership boundaries of Foundation:
 
-Foundation owns four explicit runtime graphs:
+- InterMix: dependency injection, scopes, lifetimes;
+- Webrick: HTTP routing/request/response mechanics;
+- Foundation: bootstrap, runtime selection, providers, CLI policy, modules, scheduling/application orchestration;
+- Omnibus: events/messages/queues/workers/workflows;
+- DBLayer: database mechanics;
+- CacheLayer: cache/locks/counters/shared state;
+- Pathwise: storage/filesystem behavior;
+- ReqShield: validation/sanitization;
+- EpiCrypt: cryptographic primitives;
+- TalkingBytes: HTTP/email/webhook/gRPC mechanics;
+- UID: identifier algorithms.
+
+Foundation owns exactly four explicit runtime graphs:
 
 ```text
 web
@@ -361,48 +327,32 @@ worker
 scheduler
 ```
 
-Runtime mode is explicit and is not inferred from `PHP_SAPI`.
+Runtime mode is not inferred from PHP SAPI.
 
-The MCP must understand these important architecture boundaries:
-
-- InterMix owns dependency injection, scopes and lifetimes;
-- Webrick owns HTTP routing/request/response mechanics;
-- Foundation owns CLI definitions/parsing/execution policy;
-- Omnibus owns messaging/event/queue mechanics;
-- DBLayer owns database mechanics;
-- CacheLayer owns cache/locks/counters/shared state;
-- Pathwise owns storage/filesystem behavior;
-- ReqShield owns validation/sanitization mechanics;
-- EpiCrypt owns cryptographic primitives;
-- TalkingBytes owns communication protocol mechanics;
-- UID owns identifier algorithms;
-- Foundation owns composition, runtime selection, providers, modules, application policy and bridges.
-
-Foundation MCP should expose these boundaries through architecture resources and inspection results so an agent does not incorrectly invent Foundation forwarding facades for specialist libraries.
+The MCP must prevent misleading context such as inventing generic Foundation-prefixed facades for specialist libraries or treating application maintenance workers as Omnibus queue workers.
 
 ---
 
 ## 11. Host Project Detection
 
-Foundation MCP must support:
+Support:
 
-1. the canonical Infbyte skeleton/application;
-2. custom projects that directly host Infocyph Foundation.
+1. canonical Infbyte applications/skeleton;
+2. custom applications directly using Infocyph Foundation.
 
-Detection begins from the current working directory and walks upward unless `--root` is provided.
+Root discovery starts from the current working directory and walks upward unless `--root` is supplied.
 
-Strong evidence includes:
+Evidence may include:
 
-- `composer.json`;
-- an `infocyph/foundation` dependency;
-- the root `infbyte` executable for Infbyte hosts;
-- `bootstrap/app.php` using Foundation runtime construction;
-- canonical `routes/` / `config/` / `app/` structure;
-- Composer-installed Foundation metadata.
+- `composer.json` requiring `infocyph/foundation`;
+- Composer-installed Foundation metadata;
+- root `infbyte` executable;
+- `bootstrap/app.php` Foundation runtime construction;
+- canonical app/bootstrap/config/routes structure.
 
-Do not require the Composer package name to remain `infocyph/infbyte`, because create-project consumers may rename their application package.
+Do not require the Composer package name to remain `infocyph/infbyte`.
 
-Return host classification:
+Classify host as:
 
 ```text
 infbyte
@@ -410,225 +360,98 @@ foundation_custom
 unsupported
 ```
 
-along with evidence used for detection.
+and return detection evidence.
+
+The resolved project root is immutable for the server process.
 
 ---
 
-## 12. Project Root Security
+## 12. Source-of-Truth Precedence
 
-Root discovery must:
-
-- normalize paths;
-- resolve real paths;
-- reject nonexistent roots;
-- reject unsupported roots;
-- remain immutable for the process lifetime;
-- never silently switch projects;
-- prevent resource traversal outside allowed roots.
-
-CLI override:
-
-```bash
-vendor/bin/foundation-mcp --root=/absolute/project/path
-```
-
-The server must fail clearly when the provided root is not a valid Foundation host.
-
----
-
-## 13. Source-of-Truth Precedence
-
-When information conflicts, use this order:
+Use this precedence when sources disagree:
 
 ```text
 1. current project working tree
 2. composer.lock
 3. Composer installed-version/install-path metadata
-4. installed dependency source/composer.json
+4. installed package source/composer.json
 5. project composer.json constraints
-6. bundled local documentation
+6. local package/project documentation
 ```
 
-Examples:
+Never infer an exact version from a Composer constraint.
 
-If `composer.json` says:
-
-```text
-infocyph/foundation ^2.1
-```
-
-and the lock/installed metadata says:
-
-```text
-2.1.4
-```
-
-then `2.1.4` is the implementation target.
-
-If the lock and installed package disagree, return an explicit dependency-state mismatch.
-
-Never invent an exact version from a constraint.
+If lock and installed metadata disagree, expose an explicit dependency-state mismatch.
 
 ---
 
-## 14. Composer Intelligence
+## 13. Composer Intelligence
 
-Build a dedicated Composer metadata layer.
+Read:
 
-Inputs:
+- project `composer.json`;
+- `composer.lock`;
+- `Composer\InstalledVersions` where suitable;
+- generated installed metadata when necessary;
+- installed package `composer.json` files.
 
-```text
-composer.json
-composer.lock
-Composer\InstalledVersions when available
-vendor/composer/installed.php / installed.json when needed
-installed package composer.json files
-```
+Expose:
 
-Capabilities:
-
-- direct runtime dependencies;
-- direct dev dependencies;
-- transitive dependency graph;
-- exact locked version;
-- exact installed version;
-- source/reference metadata;
-- install path;
+- runtime/dev direct dependencies;
+- transitive graph;
+- exact locked/installed versions;
+- source references;
+- install paths;
 - autoload mappings;
-- `suggest`;
-- `provide`;
-- `replace`;
-- `conflict`;
+- suggest/provide/replace/conflict metadata;
 - PHP/platform requirements;
-- runtime/dev relationship;
-- missing installed package diagnostics;
-- lock/install version mismatch diagnostics.
+- package ownership;
+- missing package and lock/install mismatch diagnostics.
 
-Do not implement a Composer dependency solver.
+Do not implement a Composer solver and do not require full `composer/composer` just to inspect local metadata.
 
-Do not add `composer/composer` merely for introspection.
-
-Do not add `composer/semver` unless implementation proves a required runtime operation cannot be performed correctly without it. The primary MCP contract can expose declared constraints and exact versions without re-solving Composer constraints.
+Do not add `composer/semver` unless the implementation proves a necessary operation cannot be answered from existing Composer/runtime metadata without reimplementing constraint semantics.
 
 ---
 
-## 15. Minimal Foundation-MCP Composer Dependencies
+## 14. PHP Source Analysis
 
-Target package shape:
+The production analysis path is the parser/analysis environment supplied by required PHPForge.
 
-```json
-{
-    "name": "infocyph/foundation-mcp",
-    "description": "Local MCP development intelligence for Infocyph Foundation applications.",
-    "type": "library",
-    "license": "MIT",
-    "require": {
-        "php": "^8.4",
-        "mcp/sdk": "^0.8.0"
-    },
-    "require-dev": {
-        "infocyph/phpforge": "dev-main@dev"
-    },
-    "autoload": {
-        "psr-4": {
-            "Infocyph\\FoundationMcp\\": "src/"
-        }
-    },
-    "autoload-dev": {
-        "psr-4": {
-            "Infocyph\\FoundationMcp\\Tests\\": "tests/"
-        }
-    },
-    "bin": [
-        "bin/foundation-mcp"
-    ],
-    "config": {
-        "allow-plugins": {
-            "ergebnis/composer-normalize": true,
-            "infocyph/phpforge": true,
-            "pestphp/pest-plugin": true
-        },
-        "optimize-autoloader": true,
-        "sort-packages": true
-    }
-}
-```
+Foundation MCP must support static extraction of:
 
-Do not duplicate tooling already supplied by PHPForge in the development environment.
-
-In particular, do not directly add development-only copies of:
-
-- PHP parser packages;
-- PHPStan;
-- Psalm;
-- Rector;
-- Pint;
-- PHPCS;
-- Pest;
-- Symfony Process;
-- benchmark tools;
-- architecture tools.
-
-If implementation code eventually imports a third-party class directly at runtime and cannot safely operate without it, that library becomes a direct runtime dependency. Incidental transitive availability must never be treated as a contractual runtime dependency.
-
-The initial architecture is intentionally designed to avoid requiring such additions.
-
----
-
-## 16. PHP Analysis Backends
-
-Foundation MCP needs strong PHP source intelligence without bloating its dependency graph.
-
-Use two analysis tiers.
-
-### 16.1 AST backend
-
-When `nikic/php-parser` classes are available in the host development environment, use them through an internal optional adapter.
-
-This is expected to be available in the canonical Infbyte + PHPForge development setup.
-
-The adapter must be dynamically detected and isolated; Foundation MCP's package metadata does not directly require the parser.
-
-The AST backend provides the highest-confidence extraction for:
-
-- namespaces/imports;
-- classes/interfaces/traits/enums;
-- methods/functions;
-- types;
+- namespace/imports/aliases;
+- class/interface/trait/enum/function declarations;
+- methods/properties/constants/enum cases;
+- parameters/types/return types;
+- inheritance/implements/trait relationships;
 - attributes;
-- inheritance;
-- static calls;
-- constructor calls;
-- function calls;
+- PHPDoc summaries;
+- constructor/static/function calls;
 - resolvable method calls;
-- literal arrays/configuration;
-- route/schedule builder chains;
-- line ranges.
+- type references;
+- literal arrays used by Foundation/module/config registration;
+- file/line locations.
 
-### 16.2 Native tokenizer backend
+The server must never `require` arbitrary project/package source files for discovery and must never use Reflection against host application classes as its primary analysis mechanism.
 
-Always provide a native PHP tokenizer fallback.
+### Mandatory parser availability
 
-The fallback must support at minimum:
+There is no reduced tokenizer-only operating mode in the production contract.
 
-- namespace/import detection;
-- class/interface/trait/enum declarations;
-- method/function names;
-- inheritance/implements names;
-- obvious class references;
-- Composer/module literal extraction needed for core inspection;
-- lexical/path search;
-- safe source line mapping.
+If the PHPForge toolchain is present but the parser capability Foundation MCP requires is missing or incompatible:
 
-Results must identify which backend produced them and the confidence level.
+- `doctor` fails;
+- server startup may fail with a clear dependency/toolchain diagnostic;
+- CI/release fails.
 
-The absence of the AST backend must degrade precision, not make the MCP server unusable.
+This keeps analysis quality deterministic and avoids maintaining two divergent analysis implementations.
 
 ---
 
-## 17. No Application Bootstrap
+## 15. No Application Bootstrap or Source Execution
 
-Foundation MCP must not bootstrap the host application merely to inspect it.
+Never bootstrap the host application for ordinary inspection.
 
 Do not call:
 
@@ -639,44 +462,28 @@ Foundation::worker()
 Foundation::scheduler()
 ```
 
-for ordinary context discovery.
+Do not execute `php infbyte ...` to discover metadata.
 
-Do not run:
+Do not instantiate providers, controllers, workers, routes, database connections, cache stores or user classes.
 
-```bash
-php infbyte ...
-```
+Foundation MCP must remain useful when:
 
-for inspection.
+- application bootstrap is broken;
+- config is invalid;
+- a provider throws;
+- database/cache/network is unavailable;
+- a route references a missing class;
+- an individual PHP file has a syntax error.
 
-Do not instantiate providers, DB connections, cache stores, workers, route handlers or application services.
-
-Reasons:
-
-- partially broken applications must remain inspectable;
-- provider/bootstrap code may have side effects;
-- database/cache/network connections could be opened;
-- secrets could be loaded;
-- inspection should be deterministic;
-- development tooling must survive invalid application state.
-
-Composer's generated autoload metadata may be used because the MCP executable itself necessarily runs through Composer, but application runtime construction is prohibited.
+A parse failure in one file must be reported without making unrelated project context unavailable whenever safely possible.
 
 ---
 
-## 18. Project File Discovery
+## 16. Project and Package File Discovery
 
-Read PSR autoload configuration from Composer rather than assuming only `app/`.
+Use Composer autoload metadata rather than hardcoding only `app/`.
 
-Discover:
-
-- PSR-4 roots;
-- PSR-0 roots if present;
-- classmap roots where practical;
-- autoload-dev roots;
-- test namespaces.
-
-Also recognize canonical Infbyte/Foundation host areas:
+Discover PSR-4/PSR-0/classmap/dev roots and recognize canonical host areas:
 
 ```text
 app/
@@ -693,9 +500,7 @@ CONTRIBUTING.md
 SECURITY.md
 ```
 
-Generated and writable directories must not be treated as authoritative source.
-
-Default exclusions:
+Default project exclusions:
 
 ```text
 .git/
@@ -710,60 +515,33 @@ tmp/
 temp/
 ```
 
-`vendor/` is not globally scanned. Dependency source access is package-aware.
+Do not globally scan `vendor/`.
+
+Dependency source access is package-aware and rooted from Composer's actual install path. This must support path-repository/symlink installs while still preventing arbitrary filesystem access.
+
+Default dependency intelligence covers installed `infocyph/*`, Foundation itself and packages named by the installed Foundation module catalog. Third-party installed packages may be inspected when explicitly requested.
 
 ---
 
-## 19. Package-Aware Vendor Access
+## 17. Foundation Structural Inspectors
 
-The MCP must understand installed packages without recursively indexing the entire `vendor/` tree.
+Provide dedicated static inspectors for the Foundation host conventions.
 
-Default package intelligence includes:
+### Routes
 
-- `infocyph/foundation`;
-- Foundation's direct Infocyph dependencies;
-- packages named by the installed Foundation module catalog;
-- other `infocyph/*` packages installed in the project.
+Inspect Webrick/Foundation route registration and return method, path, name, handler, middleware/options, source/line and resolved/dynamic status.
 
-Third-party dependencies may be inspected when explicitly requested by package name.
+### Commands
 
-Package roots must come from Composer's installed metadata.
+Inspect explicit `routes/console.php` registration. Foundation has no second command-directory discovery mechanism. Return command name/class/source/metadata where statically available.
 
-Never construct a vendor path from arbitrary user input.
+### Providers
 
-Path-repository/symlink installs must be supported by using Composer's registered install path and resolved real path as an allowed dependency root.
+Inspect `bootstrap/providers.php` and equivalent host registration without instantiation.
 
----
+### Configuration
 
-## 20. Static Module Catalog Reader
-
-Foundation MCP must read the installed Foundation `ModuleCatalog` without loading/executing the class.
-
-Extract:
-
-- module names;
-- backing package constraints;
-- `built_in` flag;
-- descriptions;
-- aliases;
-- config files;
-- schema ownership.
-
-Preferred extraction order:
-
-1. AST backend if available;
-2. safe literal/token parser fallback;
-3. explicit diagnostic if the installed Foundation implementation cannot be parsed statically.
-
-Do not keep a second mutable package/module registry inside Foundation MCP.
-
-A small compatibility fixture may exist in tests, but runtime truth comes from the installed Foundation version.
-
----
-
-## 21. Configuration Intelligence
-
-Foundation configuration precedence is:
+Understand Foundation precedence:
 
 ```text
 Foundation defaults
@@ -772,226 +550,56 @@ Foundation defaults
 -> inline bootstrap values
 ```
 
-Foundation MCP should inspect these sources statically where possible.
+Return key paths, literal defaults, referenced classes, environment variable names, ownership and source evidence. Never read actual `.env` values.
 
-Return:
+### Schedules
 
-- config file/group;
-- nested key paths;
-- literal defaults when safely resolvable;
-- referenced classes;
-- environment variable names;
-- source path/line;
-- owning Foundation module when known;
-- whether project config overrides a Foundation template;
-- whether a value is dynamic/unresolved.
+Inspect `routes/schedule.php`, fluent timing/policy calls, stable schedule identity where present, overlap/single-server policy and dynamic sections.
 
-Never load `.env` or `.env.local`.
+### Workers
 
-For:
+Keep distinct:
 
-```php
-'host' => env('DB_HOST', '127.0.0.1')
-```
+1. Foundation application maintenance workers from `routes/workers.php` / `WorkerProvider`;
+2. Omnibus messaging workers configured through messaging config.
 
-Foundation MCP may return:
+### Runtime/bootstrap
+
+Inspect bootstrap runtime selection, base path and inline options. Preserve the four explicit Foundation runtime graphs.
+
+### Modules
+
+Use the installed Foundation `ModuleCatalog`, not a copied Foundation-MCP registry.
+
+---
+
+## 18. Symbol and Reference Indexes
+
+Build lazy in-memory indexes over project source and requested dependency source.
+
+The symbol index records declarations, signatures, ownership, relationships and line ranges.
+
+The reference index records relationships such as:
 
 ```text
-key: host
-environment: DB_HOST
-default: 127.0.0.1
+import
+new
+extends
+implements
+trait-use
+attribute
+type
+call
+route
+command
+provider
+config
+worker
+schedule
+test
 ```
 
-but never the current secret environment value.
-
-Recognize Foundation config-cache artifacts as deployment-owned generated data, not authoritative source.
-
----
-
-## 22. Route Intelligence
-
-Inspect route files statically, including canonical Infbyte route definitions such as `routes/api.php`.
-
-Where resolvable, return:
-
-- HTTP method;
-- URI/path;
-- route name;
-- callable/controller symbol;
-- middleware/options;
-- source path;
-- source line;
-- confidence;
-- unresolved/dynamic state.
-
-Support common Webrick registration patterns such as method calls on the route registrar.
-
-Never fabricate values for dynamically generated routes.
-
----
-
-## 23. Command Intelligence
-
-Foundation does not use a second console framework or command-directory auto-discovery.
-
-Application commands are explicitly registered in `routes/console.php`.
-
-Foundation MCP must inspect:
-
-- command name/key;
-- command class;
-- source registration;
-- class declaration;
-- statically available description/metadata;
-- package/project ownership;
-- confidence.
-
-Foundation system commands may be inspected from installed Foundation source where practical.
-
-Do not execute commands to discover metadata.
-
----
-
-## 24. Schedule Intelligence
-
-Schedules are declared in `routes/schedule.php` using Foundation scheduling APIs.
-
-Inspect fluent schedule definitions statically where possible and return:
-
-- command/action;
-- explicit schedule key/identity when present;
-- frequency/timing calls;
-- overlap policy;
-- single-server policy;
-- source lines;
-- dynamic/unresolved segments.
-
-Foundation schedule identity semantics must be preserved: duplicated command strings are not automatically the same schedule.
-
-Compiled `bootstrap/cache/schedule.php` is an optimization artifact, not the primary source for development intelligence.
-
----
-
-## 25. Worker Intelligence
-
-Foundation has two distinct worker families:
-
-1. application maintenance workers registered in `routes/workers.php` and implementing Foundation `WorkerProvider`;
-2. Omnibus messaging workers configured under messaging configuration.
-
-Foundation MCP must not merge these concepts.
-
-Return for application workers:
-
-- worker key;
-- provider class;
-- registration source;
-- singleton/coordination configuration when statically available;
-- class declaration;
-- confidence.
-
-For Omnibus messaging workers, inspect messaging configuration and installed Omnibus source/metadata as needed.
-
-Do not start workers.
-
----
-
-## 26. Provider Intelligence
-
-Inspect application provider registration such as `bootstrap/providers.php` and equivalent host configuration.
-
-Return:
-
-- provider class;
-- source location;
-- project/package ownership;
-- referenced services where statically obvious;
-- confidence.
-
-Never instantiate providers.
-
----
-
-## 27. Runtime/Bootstrap Intelligence
-
-Inspect bootstrap code such as Infbyte's `bootstrap/app.php` and identify:
-
-- selected Foundation runtime constructor;
-- base path setup;
-- inline bootstrap options;
-- provider registration links;
-- route/config relationships;
-- dynamic/unresolved bootstrap expressions.
-
-Foundation MCP must understand that Infbyte's canonical web bootstrap uses the explicit web runtime and that CLI/worker/scheduler are separate Foundation runtime graphs.
-
-Do not infer runtime from the process SAPI.
-
----
-
-## 28. PHP Symbol Index
-
-Build a lazy symbol index over project source and requested dependency source.
-
-Supported declarations:
-
-```text
-class
-interface
-trait
-enum
-function
-method
-property
-class constant
-enum case
-```
-
-Capture where available:
-
-- FQCN/name;
-- declaration kind;
-- namespace/imports;
-- visibility;
-- static/final/abstract flags;
-- parameters and types;
-- return type;
-- parent/interfaces;
-- used traits;
-- attributes;
-- PHPDoc summary;
-- source path;
-- line range;
-- project/package owner.
-
-Index construction is lazy and cacheable for the MCP process lifetime.
-
----
-
-## 29. Usage/Reference Index
-
-Track references including:
-
-- imports;
-- `new`;
-- `extends`;
-- `implements`;
-- trait use;
-- attributes;
-- declared parameter/property/return types;
-- static calls;
-- resolvable method calls;
-- function calls;
-- class-constant references;
-- route handlers;
-- command registration;
-- worker registration;
-- schedule references;
-- provider registration;
-- configuration class references;
-- test references.
-
-Every result must include confidence:
+Every reference carries confidence:
 
 ```text
 exact
@@ -1000,191 +608,81 @@ lexical
 dynamic
 ```
 
-Never promote a lexical/dynamic guess to an exact reference.
+Dynamic PHP that cannot be proven statically must be reported as unresolved rather than guessed.
 
 ---
 
-## 30. Dynamic PHP Policy
+## 19. Related-Test Discovery
 
-PHP permits patterns static analysis cannot prove.
-
-Examples:
-
-```php
-$class = $config['handler'];
-new $class();
-```
-
-or dynamic method/route construction.
-
-For unresolved code, return:
-
-```text
-dynamic: true
-resolved: false
-```
-
-with the relevant source excerpt/location.
-
-Accuracy is more important than pretending to have whole-program knowledge.
-
----
-
-## 31. Test Relationship Discovery
-
-For a source symbol or file, locate likely related tests using this priority:
+For a source target, rank related tests by:
 
 1. exact symbol references;
 2. direct construction/call references;
-3. namespace/path conventions;
-4. test filename conventions;
+3. namespace/path relationships;
+4. filename conventions;
 5. lexical fallback.
 
-Return confidence for every relationship.
-
-A filename similarity alone must never be reported as an exact relationship.
+Return confidence. Filename similarity alone is never an exact relationship.
 
 ---
 
-## 32. Git Workspace Intelligence
+## 20. Git Workspace Intelligence
 
 Git integration is read-only and optional.
 
-When Git is available, inspect:
+Expose:
 
-- current branch;
-- HEAD commit;
-- detached-HEAD state;
+- branch/HEAD/detached state;
 - dirty state;
-- staged files;
-- unstaged files;
-- untracked files;
-- added/deleted/renamed files;
-- changed line ranges where useful;
-- Composer changes;
-- changed PHP symbols;
-- route/config/module/provider/worker/schedule changes.
-
-If Git is unavailable, all non-Git MCP capabilities remain functional.
-
----
-
-## 33. Git Process Security
-
-Use native `proc_open()` with argument-safe process construction.
-
-Never route through:
-
-```text
-sh -c
-bash -c
-cmd /c
-powershell -Command
-```
-
-Allowed Git operations must be a fixed read-only allowlist, for example:
-
-```text
-rev-parse
-status
-diff --name-status
-diff --numstat
-diff --unified=0
-show
-ls-files
-```
-
-Never permit Foundation MCP to invoke mutating Git operations.
-
-User-provided refs must be validated and supplied as isolated arguments.
-
----
-
-## 34. Change Analysis
-
-When the working tree differs from a base reference, Foundation MCP should identify:
-
-- changed files;
-- changed PHP declarations;
-- changed references;
-- route changes;
-- command changes;
-- provider changes;
-- config changes;
-- module-catalog/config relationship changes;
-- worker/schedule changes;
+- staged/unstaged/untracked files;
+- add/delete/rename status;
+- changed PHP declarations/references;
+- route/command/provider/config/module/worker/schedule changes;
 - Composer dependency changes;
-- likely affected tests.
+- initial affected tests/symbols.
 
-Do not return an entire large Git diff by default.
+Use argument-safe `proc_open()` calls and a fixed read-only Git allowlist.
 
-Return compact structured facts and allow precise follow-up reads.
+Never call through `sh -c`, `bash -c`, `cmd /c` or PowerShell command strings.
+
+No mutating Git command is permitted.
 
 ---
 
-## 35. Dependency Change Analysis
+## 21. Dependency and Change Impact
 
-When `composer.json` or `composer.lock` changes, identify:
+When Composer files change, detect:
 
-- added packages;
-- removed packages;
-- exact locked-version changes;
+- package additions/removals;
 - direct constraint changes;
+- exact locked-version changes;
 - runtime/dev movement;
-- source-reference changes where present;
-- changed transitive package set;
-- Foundation module relationships affected by those packages;
-- project symbols/files referencing changed packages.
+- source-reference changes;
+- changed transitive set;
+- affected Foundation modules;
+- project code referencing changed packages.
 
-This analysis uses local before/after Git content and Composer metadata.
-
-No remote release lookup is required.
-
----
-
-## 36. Impact Engine
-
-Provide deterministic bounded impact analysis for targets such as:
+Provide deterministic bounded impact analysis for:
 
 ```text
 symbol
 file
 package
-Foundation module
+module
 route
-config key
-current workspace changes
+config
+workspace changes
 ```
 
-Combine evidence from:
+Combine evidence from references, inheritance, implementations, traits, registrations, module/package graph, config relationships, Git changes and related tests.
 
-- references;
-- inheritance;
-- interface implementations;
-- trait users;
-- route registration;
-- command registration;
-- worker/schedule registration;
-- provider registration;
-- config references;
-- Composer graph;
-- module catalog;
-- related tests;
-- Git changes.
-
-Impact results must distinguish direct evidence from inferred/lexical relationships.
-
-Traversal depth and result count must be bounded.
+Direct evidence and lexical/inferred evidence must remain distinguishable.
 
 ---
 
-## 37. MCP Tool Surface
+## 22. MCP Tool Surface
 
-Expose a deliberately small stable tool set.
-
-All tool names use a Foundation prefix to reduce collisions in clients that flatten tools from multiple MCP servers.
-
-Required tools:
+Expose exactly this compact production tool set:
 
 ```text
 foundation_project
@@ -1198,60 +696,15 @@ foundation_changes
 foundation_impact
 ```
 
-Do not create one MCP tool per framework feature.
+The `foundation_` prefix prevents collisions when an AI client connects multiple MCP servers.
 
-A compact surface reduces schema/context overhead and tool-selection mistakes.
+### `foundation_project`
 
----
+Authoritative host summary: host type, PHP, Foundation declared/locked/installed version, Composer diagnostics, Git summary, autoload/test roots, analysis/PHPForge readiness and module/package overview.
 
-## 38. Tool: `foundation_project`
+### `foundation_search`
 
-Purpose: authoritative project/environment summary.
-
-Input:
-
-```json
-{}
-```
-
-Return:
-
-- resolved project root identifier without unnecessarily exposing full private absolute paths;
-- host type (`infbyte` / `foundation_custom`);
-- PHP runtime version;
-- project PHP constraint;
-- Foundation declared constraint;
-- Foundation locked version;
-- Foundation installed version;
-- Foundation install path identifier;
-- analysis backend (`ast` / `tokenizer`);
-- Composer state diagnostics;
-- Git branch/HEAD/dirty state when available;
-- project autoload roots;
-- test roots;
-- direct runtime/dev dependency summary;
-- recognized Foundation module count;
-- capability limitations/diagnostics.
-
-This is the preferred first tool call for an agent entering a Foundation project.
-
----
-
-## 39. Tool: `foundation_search`
-
-Purpose: unified symbol/path/text/documentation search.
-
-Input shape:
-
-```json
-{
-    "query": "CacheLayer multiGet",
-    "scope": "all",
-    "package": null,
-    "kind": "auto",
-    "limit": 10
-}
-```
+Unified project/Foundation/package/tests/routes/config/docs symbol/path/text search with deterministic ranking, small excerpts and result limits.
 
 Scopes:
 
@@ -1276,137 +729,21 @@ path
 text
 ```
 
-Results include:
+### `foundation_read`
 
-- owner (`project` or package name);
-- path;
-- line range;
-- symbol when applicable;
-- match type;
-- confidence;
-- short excerpt;
-- resource URI.
+Bounded safe read of approved project/dependency resources with line ranges and secret/path protection.
 
-Ranking priority:
+### `foundation_symbol`
 
-```text
-exact FQ symbol
-exact local symbol
-exact identifier
-exact phrase
-structured reference
-path/filename
-case-insensitive text
-weak lexical
-```
+Exact declaration/signature/relationships/source information for a PHP symbol.
 
-No embeddings or vector database.
+### `foundation_usages`
 
----
+References to a symbol with relationship and confidence.
 
-## 40. Tool: `foundation_read`
+### `foundation_inspect`
 
-Purpose: precise bounded file/resource reading.
-
-Input supports:
-
-- resource URI or approved relative path;
-- optional line start/end;
-- maximum bounded range.
-
-Allowed content:
-
-- project source/doc files;
-- Foundation package source/docs;
-- approved installed dependency source/docs;
-- Composer metadata.
-
-Reject:
-
-- disallowed secrets;
-- arbitrary absolute paths;
-- traversal;
-- binaries;
-- devices/sockets/FIFOs;
-- oversized unbounded reads.
-
-Large files require ranged access.
-
----
-
-## 41. Tool: `foundation_symbol`
-
-Purpose: exact declaration/API context for a PHP symbol.
-
-Input example:
-
-```json
-{
-    "symbol": "Infocyph\\Foundation\\Foundation::web"
-}
-```
-
-Return:
-
-- package/project owner;
-- FQCN/symbol;
-- declaration kind;
-- signature;
-- parameters/types;
-- return type;
-- visibility/modifiers;
-- attributes;
-- PHPDoc summary;
-- parent/interfaces/traits;
-- member summary for types;
-- source path/line;
-- analysis confidence;
-- resource URI.
-
-Do not automatically append every usage; that belongs to `foundation_usages`.
-
----
-
-## 42. Tool: `foundation_usages`
-
-Purpose: references to a symbol.
-
-Input example:
-
-```json
-{
-    "symbol": "Infocyph\\Foundation\\Foundation::web",
-    "scope": "project",
-    "limit": 50
-}
-```
-
-Return each usage with:
-
-- owner;
-- path;
-- line;
-- containing symbol;
-- relationship (`call`, `new`, `extends`, `implements`, `type`, `route`, `provider`, `worker`, `schedule`, `config`, `test`, etc.);
-- confidence;
-- short excerpt.
-
----
-
-## 43. Tool: `foundation_inspect`
-
-Purpose: Foundation-aware structural inspection through one tool.
-
-Input:
-
-```json
-{
-    "kind": "modules",
-    "filter": null
-}
-```
-
-Supported kinds:
+One structural tool with kinds:
 
 ```text
 architecture
@@ -1421,143 +758,31 @@ runtime
 autoload
 ```
 
-Each result includes source evidence and resolved/unresolved state.
+### `foundation_packages`
 
-Important behavior:
+Composer package/dependency/module graph with exact installed/locked versions and bounded depth.
 
-- `modules` reads installed Foundation's actual catalog;
-- `routes` understands Webrick/Foundation host registration patterns;
-- `commands` understands explicit `routes/console.php` registration;
-- `workers` keeps Foundation maintenance workers separate from Omnibus workers;
-- `schedules` understands Foundation schedule identity/policy;
-- `runtime` understands the four explicit Foundation graphs.
+### `foundation_changes`
 
----
+Compact working/staged/branch change intelligence without dumping full diffs.
 
-## 44. Tool: `foundation_packages`
+### `foundation_impact`
 
-Purpose: installed package and dependency graph intelligence.
+Bounded impact graph for symbols/files/packages/modules/routes/config/current changes.
 
-Input supports:
-
-```json
-{
-    "package": "infocyph/foundation",
-    "depth": 2,
-    "scope": "all"
-}
-```
-
-Scopes:
-
-```text
-runtime
-dev
-infocyph
-all
-```
-
-Return:
-
-- package name;
-- direct/transitive relationship;
-- project constraint when direct;
-- locked version;
-- installed version;
-- source reference where available;
-- install location identifier;
-- dependencies;
-- Foundation module relationships;
-- mismatch diagnostics.
-
-Depth and result count are bounded and cycles are handled.
+Do not create dozens of tiny feature-specific tools.
 
 ---
 
-## 45. Tool: `foundation_changes`
+## 23. MCP Resources
 
-Purpose: summarize current Git changes as development context.
-
-Input:
-
-```json
-{
-    "mode": "working",
-    "base": "HEAD"
-}
-```
-
-Modes:
-
-```text
-working
-staged
-branch
-```
-
-Return:
-
-- changed files/types;
-- changed PHP symbols;
-- route/command/provider/config/module/worker/schedule changes;
-- Composer dependency changes;
-- related tests;
-- initial impact candidates.
-
-Do not dump full diffs by default.
-
----
-
-## 46. Tool: `foundation_impact`
-
-Purpose: deterministic impact analysis.
-
-Input example:
-
-```json
-{
-    "target": "App\\Contracts\\PaymentGateway",
-    "type": "auto",
-    "depth": 2
-}
-```
-
-Target types:
-
-```text
-auto
-symbol
-path
-package
-module
-route
-config
-changes
-```
-
-Return grouped evidence for:
-
-- direct usages;
-- implementations/children;
-- registrations;
-- module/package relationships;
-- routes/commands/providers/workers/schedules;
-- config references;
-- tests;
-- current Git changes;
-- confidence.
-
----
-
-## 47. MCP Resources
-
-Use the URI scheme:
+Use URI namespace:
 
 ```text
 foundation://
 ```
 
-Required static resources:
+Static resources:
 
 ```text
 foundation://project/summary
@@ -1567,7 +792,7 @@ foundation://project/module-catalog
 foundation://project/standards
 ```
 
-Required resource templates:
+Resource templates:
 
 ```text
 foundation://project/file/{path}
@@ -1575,98 +800,33 @@ foundation://package/{package}/file/{path}
 foundation://symbol/{symbol}
 ```
 
-Resources and tools must share the same underlying analysis services; do not duplicate business logic in MCP handlers.
+Resources and tools share the same underlying services; no duplicate analysis logic in MCP handlers.
+
+The architecture resource must be generated from the actual installed project/Foundation state rather than a stale hardcoded essay.
+
+The standards resource should aggregate local project/Foundation/PHPForge development rules with source attribution; it does not become a second linter.
+
+No MCP prompts are exposed. Agent behavior belongs in agent skills/instructions/user prompts.
 
 ---
 
-## 48. Architecture Resource
+## 24. Read-Only and Command-Safety Contract
 
-`foundation://project/architecture` is dynamically generated from:
+Foundation MCP exposes no project mutation.
 
-- installed Foundation version/source;
-- host bootstrap;
-- autoload roots;
-- providers;
-- route files;
-- module catalog;
-- package graph;
-- workers/schedules;
-- project structure.
+Forbidden capabilities include:
 
-It should explain the actual project rather than return a static generic Foundation essay.
-
-Static Foundation ownership rules may supplement discovered facts.
-
----
-
-## 49. Standards Resource
-
-`foundation://project/standards` aggregates development rules available locally, with source attribution.
-
-Potential sources:
-
-- project `CONTRIBUTING.md`;
-- Foundation documentation;
-- project development documentation;
-- PHPForge configuration/rules available in the development environment.
-
-Foundation MCP exposes standards as context; it does not become a second linter or style engine.
-
-Do not duplicate PHPForge's QA responsibilities.
-
----
-
-## 50. No MCP Prompts
-
-Do not expose MCP prompts such as:
-
-```text
-review_project
-write_feature
-fix_bug
-upgrade_package
-```
-
-Foundation MCP is an intelligence server.
-
-Agent behavior belongs in:
-
-- Codex/agent skills;
-- project instructions;
-- user prompts;
-- the AI client's own workflow.
-
-This prevents conflicting instruction layers and keeps MCP context factual.
-
----
-
-## 51. Read-Only Guarantee
-
-Foundation MCP is strictly read-only.
-
-It must not expose or internally perform project mutation such as:
-
-- create/edit/delete source files;
+- edit/create/delete project files;
 - Composer require/update/remove;
-- module installation/removal;
-- configuration publication;
-- migration execution;
-- database writes;
-- cache writes;
-- worker/scheduler operations;
-- Git add/commit/checkout/reset/merge/rebase/push/pull;
-- deployment actions;
+- module install/remove/config publish;
+- migrations/database writes;
+- cache mutation;
+- worker/scheduler control;
+- Git mutation;
+- deployment operations;
 - environment changes.
 
-The AI coding agent can use its own authorized editing/execution tools.
-
-Foundation MCP must not duplicate those capabilities.
-
----
-
-## 52. No Arbitrary Command Execution
-
-Never expose generic MCP tools such as:
+Never expose generic tools such as:
 
 ```text
 shell
@@ -1677,15 +837,28 @@ composer
 git
 ```
 
-Subprocess use is internal and restricted to approved read-only Git inspection.
-
-No user-supplied shell string is ever evaluated.
+The AI coding agent may have its own separately authorized tools. Foundation MCP remains a context server.
 
 ---
 
-## 53. Secret Protection
+## 25. Filesystem and Secret Security
 
-Hard-deny reads for secret-bearing files/patterns including:
+Approved read roots are only:
+
+1. resolved host project root;
+2. Composer-registered install roots for explicitly selected installed packages.
+
+For every file read:
+
+- reject NUL bytes;
+- normalize/resolve real path;
+- enforce allowed-root containment;
+- reject traversal and symlink escape;
+- reject device/socket/FIFO paths;
+- reject binary/oversized content unless only metadata is requested;
+- enforce byte/line limits.
+
+Hard-deny secret-bearing files/patterns including:
 
 ```text
 .env
@@ -1699,191 +872,96 @@ credential files
 Git credential files
 ```
 
-Explicit safe exception:
+`.env.example` is intentionally allowed.
 
-```text
-.env.example
-```
+Before MCP output, redact suspicious literal secrets associated with names such as password, secret, token, api_key, private_key, authorization, cookie, credential and DSN, plus recognized key/token patterns.
 
-may be inspected because it intentionally documents variable names/default templates.
-
-Before MCP output, redact suspicious literal values associated with keys/names such as:
-
-```text
-password
-passwd
-secret
-token
-api_key
-apikey
-private_key
-authorization
-cookie
-credential
-dsn
-```
-
-Also detect common private-key/token patterns.
-
-Config analysis should prefer environment-variable names/defaults, never loaded secret values.
+Configuration analysis returns environment variable **names/defaults**, never loaded values.
 
 ---
 
-## 54. Filesystem Security
+## 26. Output and Context Budgets
 
-All reads must be rooted in an approved real path.
+Every MCP response is bounded server-side.
 
-Approved root classes:
+Prefer:
 
-1. host project root;
-2. Composer-registered dependency install roots explicitly allowed by package selection.
-
-For every read:
-
-- normalize input;
-- reject NUL bytes;
-- resolve path;
-- confirm the resulting target remains inside the selected allowed root;
-- reject traversal;
-- reject disallowed secret files;
-- reject devices, sockets and FIFOs;
-- reject binaries unless only metadata was requested;
-- enforce byte/line limits.
-
-Composer path repositories may resolve outside the project `vendor/` directory; they are allowed only when Composer metadata identifies their install path as the requested package root.
-
----
-
-## 55. Output Budgeting
-
-Every MCP response is bounded.
-
-Default behavior favors:
-
-- small ranked lists;
-- concise structured fields;
+- small ranked result sets;
+- compact structured output;
 - small excerpts;
 - exact line ranges;
 - resource URIs for follow-up.
 
-Never return dozens of full source files from a search.
-
-Recommended flow:
+Expected interaction:
 
 ```text
 foundation_search
-  -> small matches
+  -> small candidates
 foundation_symbol
   -> exact API
 foundation_read
-  -> precise lines only
+  -> only required lines
 ```
 
-Server-side hard maximums apply even if a client requests excessive limits.
+Never return whole repositories or many full source files from a search call.
 
 ---
 
-## 56. Performance Architecture
+## 27. Performance Architecture
 
-Do not add heavy infrastructure.
+Do not introduce:
 
-Explicitly avoid:
-
-- vector databases;
-- embedding APIs/models;
+- vector database;
+- embeddings;
 - Elasticsearch;
 - Redis;
-- SQL database servers;
-- background workers/queues;
-- LLM APIs;
-- RAG frameworks;
-- persistent project index services.
+- SQL server;
+- background queue/worker;
+- LLM API;
+- RAG framework;
+- persistent project index by default.
 
 Use:
 
 - Composer metadata;
+- PHPForge-provided parser stack;
 - filesystem metadata;
-- native tokenizer;
-- optional AST backend already available in the development environment;
 - compact in-memory indexes;
 - Git metadata;
-- content fingerprints.
+- file fingerprints.
+
+### Lazy analysis
+
+`foundation_project` must not parse the whole project.
+
+Build symbol/reference/route/etc. indexes only when the requested operation needs them.
+
+Never scan all `vendor/` or parse every installed dependency on startup.
+
+### In-memory cache
+
+Cache compact parsed metadata using path + size + mtime/content fingerprint as appropriate. Invalidate automatically when files or `composer.lock` change.
+
+Avoid retaining full ASTs after compact metadata extraction unless benchmarks prove retention beneficial.
+
+### Persistent cache
+
+Do not write an index/database into the host project. The MCP must not dirty the working tree merely by running.
+
+If benchmarking proves a disposable disk cache necessary for this same production release, it must live in the OS cache directory outside the repository, be optional and be keyed by project/content identity.
 
 ---
 
-## 57. Lazy Indexing
+## 28. Error and Failure Model
 
-`foundation_project` must not parse the entire project.
-
-Build only what an operation needs.
-
-Examples:
-
-```text
-foundation_project
-  -> Composer + root + lightweight Git metadata
-
-foundation_symbol
-  -> symbol catalog as needed
-
-foundation_usages
-  -> reference index as needed
-
-foundation_inspect(kind=routes)
-  -> route files + referenced symbols only
-```
-
-Do not AST-parse all installed dependencies on startup.
-
-Do not scan all `vendor/` on startup.
-
----
-
-## 58. In-Memory Cache and Invalidation
-
-A long-lived STDIO process may cache compact analysis metadata.
-
-Key invalidation by combinations of:
-
-- resolved path;
-- file size;
-- modification time;
-- content hash where correctness requires it;
-- composer.lock fingerprint;
-- relevant Git HEAD/worktree state.
-
-When a file changes during the MCP session, stale analysis must be invalidated automatically.
-
-Do not retain complete AST trees once compact metadata has been extracted unless a benchmark proves it materially improves performance without excessive memory cost.
-
----
-
-## 59. No Persistent Project Index by Default
-
-Do not create an index/database inside an Infbyte/Foundation project.
-
-Foundation MCP should not dirty the working tree merely by connecting an agent.
-
-No default:
-
-```text
-.foundation-mcp/
-*.sqlite
-*.index
-project cache database
-```
-
-If a future implementation optimization inside the same first-release work proves disk caching necessary, it must use an operating-system cache directory outside the repository, be disposable, be keyed by project identity/content fingerprint and remain optional. The release should prefer memory-only operation unless benchmarks demonstrate otherwise.
-
----
-
-## 60. Error Model
-
-Distinguish failures clearly:
+Distinguish errors such as:
 
 ```text
 invalid_input
 unsupported_project
+phpforge_unavailable
+analysis_backend_unavailable
+analysis_backend_incompatible
 resource_not_found
 package_not_installed
 symbol_not_found
@@ -1893,53 +971,23 @@ secret_denied
 binary_resource
 git_unavailable
 invalid_git_ref
-analysis_backend_limited
 parse_error
 dynamic_unresolved
 output_limit_exceeded
 internal_analysis_failure
 ```
 
-Do not expose raw stack traces through MCP responses.
+Expected tool failures must not terminate the MCP server.
 
-Debug information goes to STDERR in verbose mode.
+Do not expose raw stack traces or unnecessary private absolute paths through MCP responses.
 
-One malformed PHP file must not make the whole project uninspectable; report the file error and continue where possible.
-
----
-
-## 61. Diagnostics and Logging
-
-Default behavior:
-
-```text
-no telemetry
-no analytics
-minimal STDERR diagnostics
-```
-
-Optional:
-
-```bash
-vendor/bin/foundation-mcp --verbose
-```
-
-Diagnostics may include:
-
-- operation;
-- elapsed time;
-- analyzed file count;
-- backend selected;
-- cache hit/miss;
-- warning category.
-
-Never log secret contents, entire source files or environment values.
+Verbose diagnostics go only to STDERR.
 
 ---
 
-## 62. CLI Surface
+## 29. CLI Surface
 
-Keep CLI minimal:
+Required commands:
 
 ```bash
 vendor/bin/foundation-mcp
@@ -1947,7 +995,7 @@ vendor/bin/foundation-mcp serve
 vendor/bin/foundation-mcp doctor
 ```
 
-Supported common options:
+Common options:
 
 ```text
 --root=<path>
@@ -1955,57 +1003,49 @@ Supported common options:
 --no-git
 ```
 
-`serve` starts STDIO MCP.
+`doctor` is read-only and verifies:
 
-`doctor` performs read-only checks:
-
-- Foundation host detection;
-- Composer metadata availability;
+- host/root detection;
+- Composer state;
 - Foundation installed/locked version;
-- MCP SDK availability/version;
-- analysis backend availability;
-- project source roots;
+- official MCP SDK availability/version;
+- PHPForge availability/version;
+- required PHP parser/analysis capability supplied through PHPForge toolchain;
+- ModuleCatalog readability;
+- source roots;
 - Git availability;
-- module-catalog readability;
 - path/security policy readiness.
 
-`doctor` must never modify the project.
-
-Do not build a second general CLI framework around this package.
+A failed mandatory parser/PHPForge requirement is a failed doctor check, not a fallback mode.
 
 ---
 
-## 63. Proposed Repository Structure
+## 30. Repository Structure
+
+Target structure:
 
 ```text
 Foundation-MCP/
 ├── bin/
 │   └── foundation-mcp
-│
 ├── src/
 │   ├── Application.php
-│   │
 │   ├── Project/
 │   │   ├── Project.php
 │   │   ├── ProjectLocator.php
 │   │   ├── ProjectDetector.php
 │   │   └── SourceRoots.php
-│   │
 │   ├── Composer/
 │   │   ├── ComposerInspector.php
 │   │   ├── InstalledPackage.php
 │   │   └── DependencyGraph.php
-│   │
 │   ├── Analysis/
-│   │   ├── Analyzer.php
-│   │   ├── TokenAnalyzer.php
-│   │   ├── AstAnalyzer.php
+│   │   ├── PhpAnalyzer.php
 │   │   ├── SymbolIndex.php
 │   │   ├── ReferenceIndex.php
 │   │   ├── SearchEngine.php
 │   │   ├── TestLocator.php
 │   │   └── ImpactAnalyzer.php
-│   │
 │   ├── Foundation/
 │   │   ├── ArchitectureInspector.php
 │   │   ├── ModuleCatalogReader.php
@@ -2016,19 +1056,15 @@ Foundation-MCP/
 │   │   ├── WorkerInspector.php
 │   │   ├── ScheduleInspector.php
 │   │   └── RuntimeInspector.php
-│   │
 │   ├── Git/
 │   │   ├── GitRunner.php
 │   │   └── WorkspaceInspector.php
-│   │
 │   ├── Security/
 │   │   ├── PathPolicy.php
 │   │   ├── SecretPolicy.php
 │   │   └── Redactor.php
-│   │
 │   ├── Resource/
 │   │   └── ResourceReader.php
-│   │
 │   └── Mcp/
 │       ├── ServerFactory.php
 │       ├── Tool/
@@ -2050,7 +1086,6 @@ Foundation-MCP/
 │           ├── ProjectFileResource.php
 │           ├── PackageFileResource.php
 │           └── SymbolResource.php
-│
 ├── tests/
 │   ├── Fixtures/
 │   ├── Unit/
@@ -2058,7 +1093,6 @@ Foundation-MCP/
 │   ├── Protocol/
 │   ├── Security/
 │   └── Performance/
-│
 ├── composer.json
 ├── README.md
 ├── CHANGELOG.md
@@ -2066,129 +1100,54 @@ Foundation-MCP/
 └── PROJECT_PLAN.md
 ```
 
-Do not create interfaces merely for architectural symmetry. Introduce abstractions where substitution, testing or backend separation actually requires them.
+Avoid interfaces/classes created only for symmetry. Introduce abstractions only at real replaceable/testing boundaries.
 
 ---
 
-## 64. Testing — Unit
+## 31. Test Requirements
 
-Unit coverage must include:
+### Unit
 
-- project detection/root traversal;
-- source-root discovery;
-- Composer metadata parsing;
-- package graph traversal/cycle handling;
-- ModuleCatalog static parsing;
-- module alias resolution;
-- tokenizer analysis;
-- optional AST adapter behavior;
-- symbol extraction;
-- reference extraction;
-- search ranking;
-- route parsing;
-- command registration parsing;
-- schedule fluent-chain parsing;
-- worker registration parsing;
-- provider parsing;
-- config/env-name extraction;
-- Git output parsing;
-- impact traversal;
-- secret redaction;
-- filesystem guards;
-- output limits.
+Cover project detection, Composer graph, ModuleCatalog parsing, PHP analysis, symbols/references, search ranking, routes, commands, providers, config, schedules, workers, Git parsing, impact analysis, related tests, redaction, path security and output limits.
 
----
+### Integration fixtures
 
-## 65. Testing — Integration Fixtures
+Include:
 
-Provide fixture hosts for at least:
-
-- minimal Infbyte project;
+- minimal Infbyte;
 - custom Foundation host;
-- project with all optional Foundation modules/packages represented;
-- project with custom PSR-4 roots;
-- project without Git;
-- dirty Git project;
-- changed `composer.json` / `composer.lock`;
-- missing vendor package;
+- all optional modules represented;
+- custom autoload roots;
+- no Git;
+- dirty Git;
+- Composer changes;
+- missing package;
 - lock/install mismatch;
 - broken PHP file;
-- dynamic route/config code;
-- symlink/path repository package;
+- dynamic PHP registration;
+- Composer path/symlink package;
 - secret-containing files;
 - large source tree.
 
-Fixtures should be deterministic and not require network access for ordinary test runs.
+Ordinary test runs must be network-independent.
+
+### Real ecosystem contract
+
+CI must validate against the actual current Infbyte/Foundation ecosystem: project structure, installed Foundation, ModuleCatalog, package graph, canonical routes/console/schedule/workers, PHPForge dependency availability and Infbyte require-dev integration.
+
+### MCP protocol
+
+Use official `mcp/sdk` client integration tests against the real STDIO server for negotiation, tool/resource listing, tool calls, structured results, invalid inputs, error survival, output framing and supported protocol revisions.
+
+### Security
+
+Test traversal, symlink escape, secret files, binaries, large reads, malicious package names/Git refs, shell metacharacters, malformed source, parse failures and schema/output abuse.
 
 ---
 
-## 66. Testing — Real Ecosystem Contract
+## 32. Cross-Platform and Performance Gates
 
-CI must also include a clean integration job against the actual Infbyte/Foundation ecosystem.
-
-At minimum verify:
-
-- current Infbyte structure;
-- current Foundation installed package;
-- current ModuleCatalog parsing;
-- direct Foundation package graph;
-- optional module package relationships;
-- canonical route/console/schedule/worker files;
-- Foundation MCP registration through Infbyte `require-dev`;
-- `composer install --no-dev` removes Foundation MCP.
-
-The fixture suite protects deterministic behavior; the ecosystem contract suite detects real repository drift.
-
----
-
-## 67. MCP Protocol Tests
-
-Use the official PHP MCP SDK client to launch Foundation MCP through STDIO and verify:
-
-- initialize/negotiation;
-- tool listing;
-- resource listing;
-- resource-template listing;
-- valid tool calls;
-- structured content where supported;
-- earlier/current protocol negotiation behavior supported by the SDK line;
-- invalid input errors;
-- server survival after expected tool failures;
-- cancellation behavior where applicable;
-- clean STDIO framing;
-- no accidental diagnostic text on STDOUT.
-
-Foundation MCP must pass protocol-level tests independently of unit tests for handler methods.
-
----
-
-## 68. Security Tests
-
-Explicit tests must cover:
-
-- `../` traversal;
-- encoded/normalized traversal variants;
-- absolute-path escape;
-- symlink escape;
-- Composer path-repository allowed-root handling;
-- `.env` access denial;
-- private key/certificate credential denial;
-- suspicious literal redaction;
-- binary files;
-- device/FIFO/socket rejection where platform applicable;
-- oversized read/search requests;
-- malicious package names;
-- malicious Git refs/arguments;
-- shell-metacharacter strings;
-- malformed UTF-8/source;
-- parse-error isolation;
-- MCP schema abuse/oversized limits.
-
----
-
-## 69. Cross-Platform CI
-
-Required CI matrix:
+CI matrix:
 
 ```text
 Linux / PHP 8.4
@@ -2197,397 +1156,224 @@ Windows / PHP 8.4
 Windows / PHP 8.5
 ```
 
-Add a macOS smoke job if CI cost remains reasonable.
+Add macOS smoke coverage when reasonable.
 
 Windows support must not depend on Bash.
 
-Git subprocess handling must work with native process execution.
-
----
-
-## 70. Performance Benchmarks
-
-Benchmark at least:
+Benchmark cold/warm:
 
 - server startup;
 - `foundation_project`;
 - exact symbol lookup;
-- text search;
-- usage search;
-- module inspection;
-- route inspection;
-- package graph;
-- Git change analysis;
+- search;
+- usages;
+- module/route inspection;
+- dependency graph;
+- change analysis;
 - impact analysis.
 
-Use small, medium and large deterministic fixtures.
-
-Record cold and warm results separately.
-
-Before release, establish CI/reference baseline and reject unjustified material regressions.
+Use deterministic small/medium/large fixtures and establish release baselines.
 
 Performance rules:
 
-- no full `vendor/` scan on startup;
-- no full-project AST parse for `foundation_project`;
-- no per-source-file subprocess;
-- no repeated parse of unchanged files;
-- no unbounded graph traversal;
-- no unbounded search output;
-- no unnecessary full AST retention.
-
----
-
-## 71. PHPForge Development and Release Gate
-
-Foundation MCP development uses:
-
-```json
-"infocyph/phpforge": "dev-main@dev"
+```text
+no full vendor scan at startup
+no whole-project parse for foundation_project
+no per-file subprocess
+no repeated parse of unchanged files
+no unbounded graph/search output
+no unnecessary full-AST retention
 ```
 
-Use PHPForge as the development/release QA authority rather than duplicating its dependencies/configuration.
+---
 
-The release must pass all applicable PHPForge gates available at release time, including relevant:
+## 33. PHPForge Release Gate
 
-- formatting/style;
-- syntax/lint;
-- static analysis;
-- refactoring checks;
-- architecture/dependency checks;
-- complexity checks;
-- security checks;
-- tests;
-- duplicate/dead-code style checks where configured;
-- benchmarks/performance validation;
-- dependency/release constraints.
+Because PHPForge is both a **runtime dependency of Foundation MCP** and the repository QA/release toolchain, Foundation MCP's release must pass all applicable PHPForge gates available at release time, including formatting, lint/syntax, static analysis, architecture/dependency rules, complexity, security, tests, refactoring/duplicate checks, benchmarks and release constraints.
 
-Do not loosen PHPForge policy to accommodate avoidable MCP implementation complexity.
+Do not weaken PHPForge rules to accommodate avoidable Foundation MCP complexity.
+
+The release matrix must explicitly verify compatibility with the exact PHPForge constraint shipped by Foundation MCP (`dev-main@dev` through the consumer lock).
 
 ---
 
-## 72. Failure Tolerance
+## 34. Generated Foundation Artifacts
 
-Foundation MCP is a debugging/development tool and must work when the host application is unhealthy.
+Foundation deployment may create config, route/matcher, command, schedule, container and optimize artifacts under deployment-owned cache paths.
 
-It should remain useful when:
+Foundation MCP recognizes these for diagnostics but treats authoritative source/config as primary for development intelligence.
 
-- bootstrap would throw;
-- config is invalid;
-- a route references a missing class;
-- one PHP file has a syntax error;
-- database/cache/network is unavailable;
-- an optional package is missing;
-- generated artifacts are stale;
-- Git is unavailable.
-
-Degrade the affected capability and report diagnostics instead of terminating the whole MCP server whenever safe.
+Generated artifacts are excluded from normal indexing and are never created, cleared or modified by Foundation MCP.
 
 ---
 
-## 73. Generated Artifact Policy
-
-Foundation supports deployment-owned generated artifacts such as:
-
-- config cache;
-- Webrick route/matcher cache;
-- command metadata cache;
-- schedule metadata cache;
-- compiled InterMix container artifacts;
-- aggregate optimize artifacts.
-
-Foundation MCP must recognize these artifacts but treat authoritative development source as primary.
-
-Generated deployment artifacts should normally be excluded from search/indexing unless a specific diagnostic asks about them.
-
-The MCP must never build, clear or mutate optimization artifacts.
-
----
-
-## 74. Documentation Requirements
+## 35. Documentation Requirements
 
 README must document:
 
-- what Foundation MCP is;
-- why it is `require-dev` in Infbyte;
-- official MCP SDK dependency;
-- STDIO setup;
-- the nine MCP tools;
+- purpose and architecture;
+- Infbyte `require-dev` integration;
+- mandatory PHPForge dependency;
+- official `mcp/sdk` dependency;
+- nine tools;
 - resources/templates;
-- supported Foundation/Infbyte host discovery;
-- exact-version behavior;
-- module semantics;
-- analyzer backends;
-- zero-network policy;
-- read-only policy;
-- secret/security model;
-- `doctor` command;
+- exact-version and module semantics;
+- STDIO setup;
+- zero-network/read-only policy;
+- security/secret policy;
+- `doctor` behavior;
+- performance/output limits;
 - troubleshooting;
-- client-agnostic MCP configuration principle;
-- examples for stable popular MCP clients where useful.
+- client-agnostic MCP launch command;
+- stable client examples where useful.
 
-Documentation must clearly state that package installation is development tooling and is not part of the Foundation application runtime.
-
----
-
-## 75. Infbyte Integration Requirements
-
-After Foundation MCP is release-ready, update Infbyte's `composer.json`:
-
-```json
-"require-dev": {
-    "infocyph/foundation-mcp": "^1.0",
-    "infocyph/phpforge": "dev-main@dev"
-}
-```
-
-Do not add Foundation MCP to:
-
-- Foundation service providers;
-- `bootstrap/app.php`;
-- module catalog;
-- application config;
-- routes;
-- workers;
-- schedules;
-- production runtime bootstrap.
-
-Composer dev installation plus the MCP binary is the complete integration.
+Documentation must clearly state that Foundation MCP and PHPForge are development tooling and disappear from production under `composer install --no-dev`.
 
 ---
 
-## 76. No Composer Plugin / Install Side Effects
-
-Foundation MCP must not be a Composer plugin.
-
-Installation must not automatically:
-
-- edit project files;
-- register MCP client configuration;
-- create cache/index files;
-- execute analysis;
-- modify Git hooks;
-- run Foundation commands.
-
-The package remains passive until `vendor/bin/foundation-mcp` is launched by an MCP client or developer.
-
----
-
-## 77. Explicit Non-Goals
+## 36. Explicit Non-Goals
 
 Foundation MCP is not:
 
-- a production Foundation runtime component;
-- a general-purpose MCP framework;
+- a Foundation runtime component;
+- a generic MCP framework;
 - a hosted MCP service;
-- a GitHub MCP;
-- a Packagist client;
-- a package updater;
-- a Composer solver;
+- a GitHub/Packagist client;
+- a package updater/Composer solver;
 - a module installer;
 - an AI/LLM service;
-- a vector-search/RAG platform;
+- a vector/RAG platform;
 - a PHPForge replacement;
-- a code formatter/linter replacement;
-- a database introspection/execution server;
-- a shell server;
+- a linter/formatter replacement;
+- a database execution server;
+- an arbitrary shell server;
 - a deployment/operations control plane;
-- a code-writing tool.
-
-These boundaries are required for security, predictability and low development overhead.
+- a code mutation tool.
 
 ---
 
-## 78. Complete First Release Scope
+## 37. Complete Production Release Checklist
 
-The first production-grade release is not a reduced MVP. It includes the complete desired Foundation development-intelligence surface described in this plan:
+The first release includes the entire intended scope; no desired capability is intentionally deferred to a hypothetical later release.
 
 ```text
-[ ] package skeleton / Composer / binary
-[ ] official mcp/sdk integration
-[ ] explicit STDIO server registration
-[ ] project/root detection
-[ ] Infbyte + custom Foundation-host support
-[ ] Composer exact-version intelligence
-[ ] installed package graph
-[ ] Foundation ModuleCatalog static reader
-[ ] purpose-first module semantics
-[ ] optional AST analyzer backend
-[ ] tokenizer fallback backend
+[ ] package skeleton/composer/binary
+[ ] mcp/sdk STDIO integration
+[ ] PHPForge as mandatory `require` dependency
+[ ] PHPForge/parser compatibility doctor gate
+[ ] explicit MCP registration
+[ ] Infbyte/custom-Foundation project detection
+[ ] secure root/package path model
+[ ] Composer exact-version/package graph
+[ ] installed Foundation ModuleCatalog parser
+[ ] purpose-first module intelligence
+[ ] PHPForge-backed AST/source analyzer
 [ ] lazy symbol index
-[ ] usage/reference index
-[ ] test relationship discovery
-[ ] configuration inspection
-[ ] route inspection
-[ ] command inspection
-[ ] provider inspection
-[ ] schedule inspection
-[ ] Foundation-worker inspection
-[ ] Omnibus-worker distinction
-[ ] runtime/bootstrap inspection
-[ ] Git workspace inspection
-[ ] dependency-change analysis
-[ ] impact analysis
-[ ] foundation_project tool
-[ ] foundation_search tool
-[ ] foundation_read tool
-[ ] foundation_symbol tool
-[ ] foundation_usages tool
-[ ] foundation_inspect tool
-[ ] foundation_packages tool
-[ ] foundation_changes tool
-[ ] foundation_impact tool
+[ ] lazy reference/usage index
+[ ] deterministic search/read
+[ ] related-test discovery
+[ ] route inspector
+[ ] command inspector
+[ ] provider inspector
+[ ] config inspector
+[ ] schedule inspector
+[ ] Foundation maintenance-worker inspector
+[ ] Omnibus worker distinction
+[ ] runtime/bootstrap inspector
+[ ] Git workspace inspector
+[ ] dependency-change analyzer
+[ ] impact analyzer
+[ ] foundation_project
+[ ] foundation_search
+[ ] foundation_read
+[ ] foundation_symbol
+[ ] foundation_usages
+[ ] foundation_inspect
+[ ] foundation_packages
+[ ] foundation_changes
+[ ] foundation_impact
 [ ] project summary resource
 [ ] architecture resource
 [ ] Composer resource
-[ ] module-catalog resource
+[ ] ModuleCatalog resource
 [ ] standards resource
-[ ] safe project-file template
-[ ] safe package-file template
+[ ] safe project/package file templates
 [ ] symbol resource template
-[ ] zero-network normal operation
-[ ] no application bootstrap
+[ ] no application bootstrap/source execution
 [ ] no arbitrary shell
 [ ] no mutation
-[ ] path isolation
-[ ] secret denial/redaction
-[ ] output budgets
-[ ] lazy in-memory caching/invalidation
+[ ] zero-network normal operation
+[ ] path/symlink/secret protections
+[ ] bounded output
+[ ] lazy in-memory cache/invalidation
 [ ] doctor command
-[ ] protocol tests
-[ ] unit/integration tests
-[ ] real ecosystem contract tests
+[ ] unit/integration/ecosystem tests
+[ ] MCP protocol tests
 [ ] security tests
 [ ] performance benchmarks
 [ ] Linux/Windows PHP 8.4/8.5 CI
-[ ] PHPForge release gates
-[ ] complete README/security documentation
-[ ] Infbyte require-dev integration validation
-[ ] no-dev production-footprint validation
+[ ] PHPForge full release gates
+[ ] README/security documentation
+[ ] Infbyte require-dev integration
+[ ] composer --no-dev zero-footprint validation
 ```
 
-No desired feature above is intentionally deferred to a hypothetical later Foundation-MCP release.
+Update this checklist after each meaningful implementation chunk. Do not mark an item complete without implementation/test evidence.
 
 ---
 
-## 79. Implementation Order for the Single Release
+## 38. Recommended Implementation Order
 
-Implementation may proceed in work chunks, but all chunks belong to the same release target.
+All steps target the same production release:
 
-Recommended order:
-
-1. repository/composer/binary + SDK STDIO skeleton;
-2. root/project detection + security/path policy;
-3. Composer/package graph + Foundation version detection;
-4. Foundation ModuleCatalog/config/runtime semantics;
-5. tokenizer analyzer + source catalog/search/read;
-6. optional AST backend + symbol/reference indexing;
-7. route/command/provider/worker/schedule inspectors;
-8. Git change analyzer;
-9. impact/test relationships;
-10. MCP tools/resources wiring and output budgets;
-11. diagnostics/doctor/failure tolerance;
-12. security hardening;
-13. full protocol/integration/ecosystem tests;
-14. performance benchmarks/optimization;
-15. documentation and Infbyte integration validation;
-16. PHPForge full release gate.
-
-The plan file must be updated after each meaningful completed work chunk. Do not mark checklist items complete without implementation/test evidence.
+1. package Composer/binary + official SDK STDIO server;
+2. PHPForge runtime integration and doctor checks;
+3. project/root/security model;
+4. Composer/package/Foundation detection;
+5. ModuleCatalog + Foundation architecture semantics;
+6. PHPForge-backed source analyzer/symbol/search/read;
+7. usages/test relationships;
+8. route/command/provider/config/worker/schedule/runtime inspectors;
+9. Git changes/dependency changes;
+10. impact engine;
+11. MCP tools/resources and output budgets;
+12. failure handling/security hardening;
+13. protocol/integration/ecosystem tests;
+14. benchmarks/performance optimization;
+15. documentation/Infbyte integration;
+16. PHPForge full production release gate.
 
 ---
 
-## 80. Definition of Done
+## 39. Definition of Done
 
-Foundation MCP is ready for its first production-grade release only when all statements below are true:
+Foundation MCP is production-release ready only when:
 
-1. `infocyph/foundation-mcp` installs as an Infbyte dev dependency without changing Foundation/runtime dependency resolution.
-2. `vendor/bin/foundation-mcp` starts a valid MCP STDIO server through official `mcp/sdk`.
-3. It operates correctly against the actual Infbyte skeleton and custom Foundation hosts.
-4. It identifies exact locked/installed Foundation and package versions.
-5. It reads the installed Foundation ModuleCatalog statically and preserves purpose-first module semantics.
-6. It distinguishes package presence from runtime activation.
-7. It can search/read project and approved package source without executing host code.
-8. It provides symbol and usage intelligence with explicit confidence.
-9. It understands routes, commands, providers, config, workers, schedules and explicit Foundation runtime graphs.
-10. It understands current Git workspace changes and dependency changes.
-11. It provides bounded deterministic impact analysis and related-test discovery.
-12. It works when the host application cannot bootstrap.
-13. It performs no normal-operation network requests.
-14. It exposes no project-mutation capability.
-15. It exposes no arbitrary command execution.
-16. It cannot read outside approved project/package roots.
-17. It denies `.env`, private keys and credential files and redacts suspicious literal secrets.
-18. It does not scan all vendor or parse the entire project during lightweight calls.
-19. Its output is bounded and designed to reduce AI context usage.
-20. Its fallback tokenizer mode remains functional when optional AST tooling is absent.
-21. Its canonical Infbyte + PHPForge environment uses available advanced parser tooling without duplicating parser packages in Foundation MCP Composer requirements.
-22. Protocol, integration, security, cross-platform and benchmark suites pass.
-23. Applicable PHPForge release gates pass.
-24. Infbyte can add it only under `require-dev`.
-25. `composer install --no-dev` leaves zero Foundation MCP runtime footprint.
-26. README/security documentation accurately describes capabilities, limits and threat model.
+1. Infbyte can require `infocyph/foundation-mcp` only under `require-dev`.
+2. Foundation MCP directly requires `infocyph/phpforge: dev-main@dev` and `mcp/sdk ^0.8.0`.
+3. It does not duplicate PHPForge's parser/static-analysis toolchain in its Composer requirements.
+4. `doctor` proves the required PHPForge/parser analysis capability is installed and compatible.
+5. `vendor/bin/foundation-mcp` exposes the complete STDIO MCP surface.
+6. It works for canonical Infbyte and custom Foundation hosts.
+7. It reports exact locked/installed Foundation/package versions.
+8. It reads the installed Foundation ModuleCatalog statically and preserves purpose-first semantics.
+9. It distinguishes package presence from runtime activation.
+10. It searches/reads/analyzes project and approved package source without executing host code.
+11. It provides exact symbols/usages with confidence and bounded context.
+12. It understands routes, commands, providers, config, workers, schedules and all four Foundation runtime graphs.
+13. It understands Git/dependency changes and produces deterministic bounded impact/test relationships.
+14. It remains useful when application bootstrap/runtime dependencies are broken.
+15. It performs no normal-operation network requests.
+16. It cannot mutate project/runtime/Git state or execute arbitrary commands.
+17. It cannot read outside approved roots or expose protected secrets.
+18. Lightweight calls do not scan/parse the entire project/vendor tree.
+19. Protocol, integration, real-ecosystem, security, cross-platform and benchmark suites pass.
+20. All applicable PHPForge release gates pass.
+21. `composer install --no-dev` leaves zero Foundation MCP/PHPForge production runtime footprint.
+22. Documentation accurately describes the dependency, security and capability contracts.
 
 ---
 
-## 81. Final Architecture
+## 40. Final Responsibility Statement
 
-```text
-                         AI CODING AGENT
-                               |
-                               | MCP / STDIO
-                               v
-                  +-----------------------------+
-                  |   infocyph/foundation-mcp   |
-                  |                             |
-                  | foundation_project          |
-                  | foundation_search           |
-                  | foundation_read             |
-                  | foundation_symbol           |
-                  | foundation_usages           |
-                  | foundation_inspect          |
-                  | foundation_packages         |
-                  | foundation_changes          |
-                  | foundation_impact           |
-                  +--------------+--------------+
-                                 |
-             +-------------------+--------------------+
-             |                   |                    |
-             v                   v                    v
-       Project source       Composer state       Git workspace
-             |                   |                    |
-             +---------+---------+---------+----------+
-                       |                   |
-                       v                   v
-                Foundation source     package source
-                       |                   |
-                       v                   v
-               installed ModuleCatalog  exact versions
-               runtime/config semantics dependency graph
-                       |                   |
-                       +---------+---------+
-                                 |
-                                 v
-                       deterministic context
-```
-
-Operating properties:
-
-```text
-local
-read-only
-zero-network by default
-version-aware
-Foundation-aware
-module-aware
-bounded
-lazy
-failure-tolerant
-secret-protected
-no application bootstrap
-no runtime mutation
-```
-
-The final responsibility statement is:
-
-> Foundation MCP gives an AI coding agent precise, safe and current knowledge of the Infbyte/Foundation project it is working on and the exact Infocyph ecosystem installed behind that project, while remaining completely outside the application's production runtime.
+> **Foundation MCP gives an AI coding agent precise, safe, current and version-correct knowledge of the Infbyte/Foundation application and the exact Infocyph ecosystem installed behind it, using PHPForge as its mandatory development-analysis substrate and the official PHP MCP SDK as its protocol implementation, while remaining completely outside the application's production runtime.**
