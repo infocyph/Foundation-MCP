@@ -12,16 +12,18 @@ It gives MCP-capable coding agents precise local context about the host project,
 - Composer 2
 - Git when workspace/change intelligence is enabled
 - `mcp/sdk ^0.8.0`
-- `infocyph/phpforge: dev-main@dev`
+- `infocyph/phpforge: dev-main@dev` installed explicitly by the consuming development project
 - `composer-runtime-api ^2.1`
 
-PHPForge is a mandatory runtime dependency **of this development tool** because it supplies the parser/static-analysis ecosystem Foundation MCP uses. It is not a production dependency of the Infbyte application.
+PHPForge is a mandatory **development-time operational prerequisite** for Foundation MCP because it supplies the parser/static-analysis ecosystem Foundation MCP uses. Foundation MCP keeps PHPForge in its own `require-dev` so the published package has a clean stable runtime dependency graph; Composer does not install a dependency package's `require-dev` transitively, so every consuming host must also require PHPForge explicitly under its own `require-dev` section.
+
+If PHPForge or the parser capability supplied by its toolchain is missing, `foundation-mcp doctor` fails and the MCP server refuses to start with a clear prerequisite error. There is no reduced tokenizer fallback.
 
 ## Installation
 
 ### Infbyte
 
-Foundation MCP belongs in `require-dev`:
+Foundation MCP and PHPForge both belong in `require-dev`:
 
 ```json
 {
@@ -48,8 +50,10 @@ That installation must contain neither Foundation MCP nor PHPForge.
 
 ### Other Foundation hosts
 
+Install both development tools explicitly:
+
 ```bash
-composer require --dev infocyph/foundation-mcp:^1.0
+composer require --dev infocyph/foundation-mcp:^1.0 infocyph/phpforge:dev-main@dev
 ```
 
 Foundation MCP does not require `infocyph/foundation` itself. It inspects the version already installed by the host.
@@ -210,8 +214,8 @@ Doctor verifies:
 
 - PHP version;
 - official MCP SDK installation;
-- PHPForge installation;
-- parser capability;
+- PHPForge installation as an explicit host development dependency;
+- parser capability supplied by the PHPForge toolchain;
 - host detection;
 - Composer lock/install consistency;
 - exact Foundation package state;
@@ -221,7 +225,7 @@ Doctor verifies:
 - Git availability when enabled;
 - construction of the complete explicit MCP tool/resource surface.
 
-A missing/incompatible mandatory parser is a failed environment, not a reduced tokenizer fallback mode.
+A missing/incompatible PHPForge or parser environment is a failed prerequisite, not a reduced tokenizer fallback mode. The server enforces the same prerequisite before constructing the MCP surface.
 
 ## Development and release validation
 
@@ -275,15 +279,28 @@ vendor/bin/foundation-mcp doctor --root=/path/to/project
 
 Foundation MCP intentionally reports locked and installed state separately. Bring the development checkout back into alignment with the project's normal Composer workflow before relying on exact package-impact information.
 
-### Parser/PHPForge unavailable
+### PHPForge unavailable
 
-Foundation MCP deliberately has no production tokenizer-only fallback. Confirm the development install includes PHPForge and its parser ecosystem:
+PHPForge is intentionally not a transitive runtime dependency of Foundation MCP. Confirm the host project explicitly includes both development tools:
+
+```json
+{
+  "require-dev": {
+    "infocyph/foundation-mcp": "^1.0",
+    "infocyph/phpforge": "dev-main@dev"
+  }
+}
+```
+
+Then run:
 
 ```bash
 composer install
 composer ic:doctor
 vendor/bin/foundation-mcp doctor --root=/path/to/project
 ```
+
+Foundation MCP deliberately has no production tokenizer-only fallback. If PHPForge or its parser ecosystem is absent, doctor fails and `serve` refuses to start.
 
 ### Git is unavailable or intentionally prohibited
 
