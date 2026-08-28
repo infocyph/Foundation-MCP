@@ -15,7 +15,6 @@ use Infocyph\FoundationMcp\Project\ProjectLocator;
 use Infocyph\FoundationMcp\Project\SourceRoots;
 use Infocyph\FoundationMcp\Security\PathPolicy;
 use Infocyph\FoundationMcp\Security\SecretPolicy;
-use PhpParser\ParserFactory;
 use Throwable;
 
 final readonly class Doctor
@@ -32,9 +31,9 @@ final readonly class Doctor
         $checks = [
             $this->phpCheck(),
             $this->packageCheck('mcp/sdk', 'Official MCP SDK'),
-            $this->packageCheck('infocyph/phpforge', 'PHPForge'),
+            RuntimeRequirements::phpForgeCheck(),
             $this->packageCheck('nikic/php-parser', 'PHP parser backend'),
-            $this->parserCheck(),
+            RuntimeRequirements::parserCheck(),
         ];
 
         try {
@@ -89,24 +88,6 @@ final readonly class Doctor
         }
 
         return ['name' => $label, 'ok' => $installed, 'detail' => $version];
-    }
-
-    /** @return array{name:string,ok:bool,detail:string} */
-    private function parserCheck(): array
-    {
-        if (!class_exists(ParserFactory::class)) {
-            return ['name' => 'Parser capability', 'ok' => false, 'detail' => ParserFactory::class.' unavailable'];
-        }
-
-        try {
-            $parser = (new ParserFactory())->createForNewestSupportedVersion();
-            $nodes = $parser->parse('<?php final class FoundationMcpParserProbe {}');
-            $ok = is_array($nodes) && $nodes !== [];
-        } catch (Throwable $exception) {
-            return ['name' => 'Parser capability', 'ok' => false, 'detail' => 'Parser compatibility failure: '.$exception->getMessage()];
-        }
-
-        return ['name' => 'Parser capability', 'ok' => $ok, 'detail' => $ok ? 'parse probe passed' : 'parse probe returned no nodes'];
     }
 
     /** @return array{name:string,ok:bool,detail:string} */
