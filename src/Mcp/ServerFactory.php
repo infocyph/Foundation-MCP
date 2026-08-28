@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Infocyph\FoundationMcp\Mcp;
 
 use Infocyph\FoundationMcp\Application;
+use Infocyph\FoundationMcp\Diagnostics\RuntimeRequirements;
 use Infocyph\FoundationMcp\Mcp\Resource\ArchitectureResource;
 use Infocyph\FoundationMcp\Mcp\Resource\ComposerResource;
 use Infocyph\FoundationMcp\Mcp\Resource\ModuleCatalogResource;
@@ -37,6 +38,8 @@ final readonly class ServerFactory
 
     public function create(): Server
     {
+        RuntimeRequirements::assertAvailable();
+
         $services = new ToolServices($this->project, $this->gitEnabled);
         $budget = new OutputBudget();
         $builder = Server::builder()
