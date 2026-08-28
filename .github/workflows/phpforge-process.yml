@@ -24,7 +24,9 @@ jobs:
           tools: composer:v2
       - run: composer install --no-interaction --prefer-dist
       - run: php .github/scripts/update-phpforge-contract.php
-      - run: composer ic:process
+      - name: Run PHPForge processing
+        continue-on-error: true
+        run: composer ic:process
       - name: Commit processed repository
         run: |
           git add -A
