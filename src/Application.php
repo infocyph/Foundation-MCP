@@ -4,8 +4,12 @@ declare(strict_types=1);
 
 namespace Infocyph\FoundationMcp;
 
+use Infocyph\FoundationMcp\Cli\Arguments;
 use Infocyph\FoundationMcp\Diagnostics\Doctor;
 use Infocyph\FoundationMcp\Mcp\ServerFactory;
+use Infocyph\FoundationMcp\Project\Project;
+use Infocyph\FoundationMcp\Project\ProjectDetector;
+use Infocyph\FoundationMcp\Project\ProjectLocator;
 use Mcp\Server\Transport\StdioTransport;
 use Throwable;
 
@@ -18,36 +22,62 @@ final class Application
      */
     public static function run(array $argv): int
     {
-        $command = $argv[1] ?? 'serve';
+        try {
+            $arguments = Arguments::parse($argv);
+        } catch (Throwable $exception) {
+            fwrite(STDERR, $exception->getMessage().PHP_EOL);
+            self::writeHelp();
 
-        if (in_array($command, ['-h', '--help', 'help'], true)) {
+            return 2;
+        }
+
+        if ($arguments->help || $arguments->command === 'help') {
             self::writeHelp();
 
             return 0;
         }
 
-        if (in_array($command, ['-V', '--version'], true)) {
+        if ($arguments->version) {
             fwrite(STDERR, 'Foundation MCP '.self::VERSION.PHP_EOL);
 
             return 0;
         }
 
-        return match ($command) {
-            'serve' => self::serve(),
-            'doctor' => (new Doctor())->run(),
-            default => self::unknown($command),
+        return match ($arguments->command) {
+            'serve' => self::serve($arguments),
+            'doctor' => (new Doctor($arguments->root))->run(),
+            default => self::unknown($arguments->command),
         };
     }
 
-    private static function serve(): int
+    private static function serve(Arguments $arguments): int
     {
         try {
-            return (new ServerFactory())->create()->run(new StdioTransport());
+            $project = self::project($arguments);
+
+            if (!$project->supported()) {
+                fwrite(STDERR, 'Foundation MCP does not support the resolved project.'.PHP_EOL);
+
+                return 1;
+            }
+
+            return (new ServerFactory($project))->create()->run(new StdioTransport());
         } catch (Throwable $exception) {
             fwrite(STDERR, 'Foundation MCP failed to start: '.$exception->getMessage().PHP_EOL);
 
+            if ($arguments->verbose) {
+                fwrite(STDERR, $exception::class.PHP_EOL);
+            }
+
             return 1;
         }
+    }
+
+    private static function project(Arguments $arguments): Project
+    {
+        $root = (new ProjectLocator())->locate($arguments->root);
+
+        return (new ProjectDetector())->detect($root);
     }
 
     private static function unknown(string $command): int
@@ -64,8 +94,8 @@ final class Application
 Foundation MCP
 
 Usage:
-  foundation-mcp [serve]
-  foundation-mcp doctor
+  foundation-mcp [serve] [--root=<path>] [--verbose] [--no-git]
+  foundation-mcp doctor [--root=<path>] [--verbose] [--no-git]
   foundation-mcp --help
   foundation-mcp --version
 

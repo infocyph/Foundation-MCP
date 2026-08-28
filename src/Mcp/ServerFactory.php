@@ -5,10 +5,16 @@ declare(strict_types=1);
 namespace Infocyph\FoundationMcp\Mcp;
 
 use Infocyph\FoundationMcp\Application;
+use Infocyph\FoundationMcp\Project\Project;
 use Mcp\Server;
 
-final class ServerFactory
+final readonly class ServerFactory
 {
+    public function __construct(
+        private Project $project,
+    ) {
+    }
+
     public function create(): Server
     {
         return Server::builder()
@@ -17,7 +23,10 @@ final class ServerFactory
                 version: Application::VERSION,
                 description: 'Read-only development intelligence for Infbyte and Infocyph Foundation applications.',
             )
-            ->setInstructions('Use Foundation MCP for precise, bounded, read-only local project and Foundation context.')
+            ->setInstructions(sprintf(
+                'Use Foundation MCP for precise, bounded, read-only local project and Foundation context. Host type: %s.',
+                $this->project->hostType->value,
+            ))
             ->build();
     }
 }

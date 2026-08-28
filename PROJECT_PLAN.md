@@ -342,6 +342,8 @@ Support:
 
 Root discovery starts from the current working directory and walks upward unless `--root` is supplied.
 
+An explicit `--root` is authoritative: resolve exactly that directory and do not climb above it. This keeps client configuration deterministic and prevents a mistyped explicit root from silently selecting a parent project.
+
 Evidence may include:
 
 - `composer.json` requiring `infocyph/foundation`;
@@ -848,6 +850,8 @@ Approved read roots are only:
 1. resolved host project root;
 2. Composer-registered install roots for explicitly selected installed packages.
 
+Approved project/package roots are canonicalized once when the server context is built and remain immutable for that server process. Path-repository/symlink package installs are allowed only through their Composer-resolved canonical install root.
+
 For every file read:
 
 - reject NUL bytes;
@@ -1257,13 +1261,13 @@ Foundation MCP is not:
 The first release includes the entire intended scope; no desired capability is intentionally deferred to a hypothetical later release.
 
 ```text
-[ ] package skeleton/composer/binary
+[x] package skeleton/composer/binary
 [ ] mcp/sdk STDIO integration
-[ ] PHPForge as mandatory `require` dependency
-[ ] PHPForge/parser compatibility doctor gate
+[x] PHPForge as mandatory `require` dependency
+[x] PHPForge/parser compatibility doctor gate
 [ ] explicit MCP registration
-[ ] Infbyte/custom-Foundation project detection
-[ ] secure root/package path model
+[x] Infbyte/custom-Foundation project detection
+[x] secure root/package path model
 [ ] Composer exact-version/package graph
 [ ] installed Foundation ModuleCatalog parser
 [ ] purpose-first module intelligence
@@ -1303,7 +1307,7 @@ The first release includes the entire intended scope; no desired capability is i
 [ ] no arbitrary shell
 [ ] no mutation
 [ ] zero-network normal operation
-[ ] path/symlink/secret protections
+[x] path/symlink/secret protections
 [ ] bounded output
 [ ] lazy in-memory cache/invalidation
 [ ] doctor command
@@ -1319,6 +1323,14 @@ The first release includes the entire intended scope; no desired capability is i
 ```
 
 Update this checklist after each meaningful implementation chunk. Do not mark an item complete without implementation/test evidence.
+
+### Implementation evidence
+
+- `092e1ad9` — package skeleton, Composer contract, executable and initial SDK STDIO bootstrap.
+- `ac78615a` — initial `doctor` dependency checks for the MCP SDK, PHPForge and PHP parser availability.
+- `feat: add project detection and filesystem security model` — strict CLI root handling; immutable project context; renamed-canonical Infbyte/custom/unsupported classification; Composer-autoload source roots; project/package path containment; traversal/absolute/symlink-escape rejection; hard secret-file policy; output redaction; PHPForge parser parse-probe; unit coverage; PHP 8.4 syntax validation and local smoke validation.
+
+The overall `mcp/sdk STDIO integration`, `explicit MCP registration`, `doctor command`, and broad test-suite checklist entries remain intentionally open until their complete production contracts are exercised by protocol/integration/ecosystem coverage.
 
 ---
 
