@@ -76,6 +76,37 @@ final readonly class GitRunner
     }
 
     /**
+     * @return array<string, string>
+     */
+    private function environment(): array
+    {
+        $environment = getenv();
+        $environment = is_array($environment) ? $environment : [];
+
+        foreach (array_keys($environment) as $name) {
+            if (str_starts_with(strtoupper($name), 'GIT_')) {
+                unset($environment[$name]);
+            }
+        }
+
+        // Ignore caller/global Git redirection and interactive helpers; only the resolved project repository should influence inspection.
+        $environment['GIT_CONFIG_NOSYSTEM'] = '1';
+        $environment['GIT_CONFIG_GLOBAL'] = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
+        $environment['GIT_OPTIONAL_LOCKS'] = '0';
+        $environment['GIT_TERMINAL_PROMPT'] = '0';
+
+        return $environment;
+    }
+
+    /** @param resource $pipe */
+    private function readPipe($pipe, int $remaining): string
+    {
+        $chunk = stream_get_contents($pipe, max(0, $remaining) + 1);
+
+        return is_string($chunk) ? $chunk : '';
+    }
+
+    /**
      * @param list<string> $arguments
      * @return array{exit:int,stdout:string,stderr:string}
      */
@@ -192,37 +223,6 @@ final readonly class GitRunner
         }
 
         return ['exit' => $exit, 'stdout' => $stdout, 'stderr' => $stderr];
-    }
-
-    /**
-     * @return array<string, string>
-     */
-    private function environment(): array
-    {
-        $environment = getenv();
-        $environment = is_array($environment) ? $environment : [];
-
-        foreach (array_keys($environment) as $name) {
-            if (str_starts_with(strtoupper($name), 'GIT_')) {
-                unset($environment[$name]);
-            }
-        }
-
-        // Ignore caller/global Git redirection and interactive helpers; only the resolved project repository should influence inspection.
-        $environment['GIT_CONFIG_NOSYSTEM'] = '1';
-        $environment['GIT_CONFIG_GLOBAL'] = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
-        $environment['GIT_OPTIONAL_LOCKS'] = '0';
-        $environment['GIT_TERMINAL_PROMPT'] = '0';
-
-        return $environment;
-    }
-
-    /** @param resource $pipe */
-    private function readPipe($pipe, int $remaining): string
-    {
-        $chunk = stream_get_contents($pipe, max(0, $remaining) + 1);
-
-        return is_string($chunk) ? $chunk : '';
     }
 
     private function safeRelativePath(string $path): string
