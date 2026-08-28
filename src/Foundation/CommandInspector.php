@@ -2,295 +2,333 @@
 
 declare(strict_types=1);
 
-namespace Infocyph\FoundationMcp\Foundation\Internal;
+namespace Infocyph\FoundationMcp\Foundation;
 
+use Infocyph\FoundationMcp\Analysis\SymbolIndex;
+use Infocyph\FoundationMcp\Composer\ComposerInspector;
+use Infocyph\FoundationMcp\Foundation\Internal\CommandDefinitionScanner;
+use Infocyph\FoundationMcp\Project\Project;
+use Infocyph\FoundationMcp\Security\PathPolicy;
+use Infocyph\FoundationMcp\Security\SecretPolicy;
+use PhpParser\Error;
 use PhpParser\Node;
+use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\NameResolver;
+use PhpParser\Parser;
+use PhpParser\ParserFactory;
+use RuntimeException;
 
 /**
- * Static reader for CommandHandlerInterface::define(CommandDefinition $command).
+ * Static inspection of explicit routes/console.php application command registration.
  *
- * @phpstan-type CommandMetadata array{
- *   name:?string,description:?string,group:?string,runtime:?string,capabilities:list<string>,aliases:list<string>,
- *   hidden:?bool,arguments:list<array{name:?string,description:?string,required:?bool,variadic:?bool}>,
- *   options:list<array{name:?string,description:?string,short:?string,accepts_value:?bool,multiple:?bool,negatable:?bool}>,
- *   dynamic_fields:list<string>
+ * @phpstan-type CommandEntry array{
+ *   name:?string,route_name:?string,handler:?string,source:string,line:int,handler_source:?string,
+ *   metadata:array<string,mixed>,status:string,dynamic_fields:list<string>
  * }
+ * @phpstan-type Diagnostic array{code:string,source:?string,line:?int,message:string}
  */
-final readonly class CommandDefinitionScanner
+final class CommandInspector
 {
-    /** @return CommandMetadata */
-    public function scan(Node\Stmt\Class_ $class): array
-    {
-        $metadata = $this->defaults();
-        $method = $class->getMethod('define');
-        if (!$method instanceof Node\Stmt\ClassMethod) {
-            $metadata['dynamic_fields'][] = 'definition';
-            return $metadata;
-        }
+    private const string SOURCE = 'routes/console.php';
+    private const int MAX_SOURCE_BYTES = 1_048_576;
+    private const int MAX_COMMANDS = 1_000;
+    private const int MAX_DIAGNOSTICS = 100;
 
-        $parameter = $method->params[0] ?? null;
-        if (!$parameter instanceof Node\Param || !$parameter->var instanceof Node\Expr\Variable || !is_string($parameter->var->name)) {
-            $metadata['dynamic_fields'][] = 'definition';
-            return $metadata;
-        }
+    private readonly Parser $parser;
+    private readonly PathPolicy $paths;
+    private readonly SecretPolicy $secrets;
+    private readonly SymbolIndex $symbols;
+    private readonly CommandDefinitionScanner $definitions;
 
-        $variable = $parameter->var->name;
-        foreach ($method->stmts ?? [] as $statement) {
-            $this->scanNode($statement, $variable, $metadata, false);
-        }
+    /** @var list<Diagnostic> */
+    private array $diagnostics = [];
 
-        $metadata['capabilities'] = $this->unique($metadata['capabilities']);
-        $metadata['aliases'] = $this->unique($metadata['aliases']);
-        $metadata['dynamic_fields'] = $this->unique($metadata['dynamic_fields']);
-
-        return $metadata;
+    public function __construct(
+        private readonly Project $project,
+        ComposerInspector $composer,
+        ?Parser $parser = null,
+        ?SymbolIndex $symbols = null,
+        ?CommandDefinitionScanner $definitions = null,
+    ) {
+        $this->parser = $parser ?? (new ParserFactory())->createForNewestSupportedVersion();
+        $this->paths = new PathPolicy($project->root);
+        $this->secrets = new SecretPolicy();
+        $this->symbols = $symbols ?? new SymbolIndex($project, $composer);
+        $this->definitions = $definitions ?? new CommandDefinitionScanner();
     }
 
-    /** @param CommandMetadata $metadata */
-    private function scanNode(Node $node, string $variable, array &$metadata, bool $conditional): void
+    /** @return array{source:string,commands:list<CommandEntry>,diagnostics:list<Diagnostic>} */
+    public function inspect(): array
     {
-        if ($node instanceof Node\Stmt\Expression) {
-            $this->scanExpression($node->expr, $variable, $metadata, $conditional);
-            return;
+        $this->diagnostics = [];
+        $candidate = $this->project->root.DIRECTORY_SEPARATOR.'routes'.DIRECTORY_SEPARATOR.'console.php';
+        if (!is_file($candidate)) {
+            return ['source' => self::SOURCE, 'commands' => [], 'diagnostics' => []];
         }
 
-        if ($node instanceof Node\Stmt\If_) {
-            $this->markConditional($node->stmts, $variable, $metadata);
-            foreach ($node->elseifs as $elseif) {
-                $this->markConditional($elseif->stmts, $variable, $metadata);
+        try {
+            $nodes = $this->parse($this->paths->projectFile(self::SOURCE), self::SOURCE);
+        } catch (RuntimeException $error) {
+            $this->diagnostic('command_source_invalid', self::SOURCE, null, $error->getMessage());
+            return ['source' => self::SOURCE, 'commands' => [], 'diagnostics' => $this->diagnostics];
+        }
+
+        if ($nodes === null) {
+            return ['source' => self::SOURCE, 'commands' => [], 'diagnostics' => $this->diagnostics];
+        }
+
+        $array = $this->returnedArray($nodes);
+        if (!$array instanceof Node\Expr\Array_) {
+            $this->diagnostic('dynamic_unresolved', self::SOURCE, null, 'Application command registration is not a statically inspectable returned array.');
+            return ['source' => self::SOURCE, 'commands' => [], 'diagnostics' => $this->diagnostics];
+        }
+
+        $commands = [];
+        foreach ($array->items as $item) {
+            if (count($commands) >= self::MAX_COMMANDS) {
+                $this->diagnostic('output_limit_exceeded', self::SOURCE, null, sprintf('Command inspection is limited to %d entries.', self::MAX_COMMANDS));
+                break;
             }
-            if ($node->else !== null) {
-                $this->markConditional($node->else->stmts, $variable, $metadata);
+            if (!$item instanceof Node\Expr\ArrayItem || $item->unpack) {
+                $this->diagnostic('dynamic_unresolved', self::SOURCE, $item?->getStartLine(), 'Unsupported command registration array syntax.');
+                continue;
             }
-            return;
+            $commands[] = $this->entry($item);
         }
 
-        if ($node instanceof Node\Stmt\Foreach_ || $node instanceof Node\Stmt\For_ || $node instanceof Node\Stmt\While_ || $node instanceof Node\Stmt\Do_) {
-            $this->markConditional($node->stmts, $variable, $metadata);
-            return;
-        }
+        $this->detectConflicts($commands);
+        usort($commands, static fn (array $left, array $right): int => [
+            $left['name'] ?? '', $left['handler'] ?? '', $left['line'],
+        ] <=> [
+            $right['name'] ?? '', $right['handler'] ?? '', $right['line'],
+        ]);
+        usort($this->diagnostics, static fn (array $left, array $right): int => [
+            $left['source'] ?? '', $left['line'] ?? 0, $left['code'], $left['message'],
+        ] <=> [
+            $right['source'] ?? '', $right['line'] ?? 0, $right['code'], $right['message'],
+        ]);
 
-        if ($node instanceof Node\Stmt\TryCatch) {
-            $this->markConditional($node->stmts, $variable, $metadata);
-            foreach ($node->catches as $catch) {
-                $this->markConditional($catch->stmts, $variable, $metadata);
-            }
-            if ($node->finally !== null) {
-                $this->markConditional($node->finally->stmts, $variable, $metadata);
-            }
-        }
+        return ['source' => self::SOURCE, 'commands' => $commands, 'diagnostics' => $this->diagnostics];
     }
 
-    /** @param list<Node\Stmt> $nodes @param CommandMetadata $metadata */
-    private function markConditional(array $nodes, string $variable, array &$metadata): void
+    /** @return CommandEntry */
+    private function entry(Node\Expr\ArrayItem $item): array
     {
-        foreach ($nodes as $node) {
-            $this->scanNode($node, $variable, $metadata, true);
-        }
-    }
-
-    /** @param CommandMetadata $metadata */
-    private function scanExpression(Node\Expr $expr, string $variable, array &$metadata, bool $conditional): void
-    {
-        if (!$expr instanceof Node\Expr\MethodCall) {
-            return;
+        $dynamic = [];
+        $route = $this->routeName($item->key);
+        if ($item->key !== null && $route === null) {
+            $dynamic[] = 'route_name';
         }
 
-        $chain = $this->chain($expr, $variable);
-        if ($chain === null) {
-            return;
+        $handler = $this->handler($item->value);
+        if ($handler === null) {
+            $dynamic[] = 'handler';
         }
 
-        foreach ($chain as [$method, $args]) {
-            $this->apply($method, $args, $metadata, $conditional);
-        }
-    }
-
-    /**
-     * @return list<array{0:string,1:list<Node\Arg>}>|null
-     */
-    private function chain(Node\Expr\MethodCall $call, string $variable): ?array
-    {
-        $calls = [];
-        $cursor = $call;
-
-        while ($cursor instanceof Node\Expr\MethodCall) {
-            if (!$cursor->name instanceof Node\Identifier) {
-                return null;
-            }
-            array_unshift($calls, [$cursor->name->toString(), $cursor->args]);
-            $cursor = $cursor->var;
+        $metadata = $this->emptyMetadata();
+        $handlerSource = null;
+        if ($handler !== null) {
+            [$metadata, $handlerSource] = $this->metadata($handler);
         }
 
-        return $cursor instanceof Node\Expr\Variable && $cursor->name === $variable ? $calls : null;
-    }
-
-    /** @param list<Node\Arg> $args @param CommandMetadata $metadata */
-    private function apply(string $method, array $args, array &$metadata, bool $conditional): void
-    {
-        $method = strtolower($method);
-        if ($conditional) {
-            $metadata['dynamic_fields'][] = $this->fieldFor($method);
+        $definedName = is_string($metadata['name'] ?? null) ? $metadata['name'] : null;
+        $name = $route ?? $definedName;
+        if ($name === null) {
+            $dynamic[] = 'name';
+        }
+        if ($route !== null && $definedName !== null && $route !== $definedName) {
+            $this->diagnostic(
+                'command_route_mismatch',
+                self::SOURCE,
+                $item->getStartLine(),
+                sprintf('Command route "%s" does not match %s::define() name "%s".', $route, $handler ?? 'handler', $definedName),
+            );
         }
 
-        match ($method) {
-            'name' => $this->scalarField($metadata, 'name', $this->stringArg($args, 0, 'name')),
-            'description' => $this->scalarField($metadata, 'description', $this->stringArg($args, 0, 'description')),
-            'group' => $this->scalarField($metadata, 'group', $this->stringArg($args, 0, 'group')),
-            'runtime' => $this->scalarField($metadata, 'runtime', $this->runtimeArg($args, 0, 'runtime')),
-            'capability' => $this->listField($metadata, 'capabilities', $this->stringArg($args, 0, 'capability')),
-            'alias' => $this->listField($metadata, 'aliases', $this->stringArg($args, 0, 'alias')),
-            'hidden' => $this->scalarField($metadata, 'hidden', $this->boolArg($args, 0, 'hidden', true)),
-            'argument' => $this->argument($metadata, $args),
-            'option' => $this->option($metadata, $args),
-            'execution' => $metadata['dynamic_fields'][] = 'execution',
-            default => null,
-        };
-    }
+        $dynamic = $this->unique([...$dynamic, ...array_map(
+            static fn (string $field): string => 'metadata.'.$field,
+            is_array($metadata['dynamic_fields'] ?? null) ? $metadata['dynamic_fields'] : [],
+        )]);
 
-    /** @param CommandMetadata $metadata */
-    private function scalarField(array &$metadata, string $field, string|bool|null $value): void
-    {
-        if ($value === null) {
-            $metadata['dynamic_fields'][] = $field;
-            return;
-        }
-        $metadata[$field] = $value;
-    }
-
-    /** @param CommandMetadata $metadata */
-    private function listField(array &$metadata, string $field, ?string $value): void
-    {
-        if ($value === null) {
-            $metadata['dynamic_fields'][] = $field;
-            return;
-        }
-        $metadata[$field][] = $value;
-    }
-
-    /** @param CommandMetadata $metadata @param list<Node\Arg> $args */
-    private function argument(array &$metadata, array $args): void
-    {
-        $name = $this->stringArg($args, 0, 'name');
-        $description = $this->stringArg($args, 1, 'description', '');
-        $required = $this->boolArg($args, 2, 'required', false);
-        $variadic = $this->boolArg($args, 3, 'variadic', false);
-        if ($name === null || $description === null || $required === null || $variadic === null) {
-            $metadata['dynamic_fields'][] = 'arguments';
-        }
-        $metadata['arguments'][] = compact('name', 'description', 'required', 'variadic');
-    }
-
-    /** @param CommandMetadata $metadata @param list<Node\Arg> $args */
-    private function option(array &$metadata, array $args): void
-    {
-        $name = $this->stringArg($args, 0, 'name');
-        $description = $this->stringArg($args, 1, 'description', '');
-        $short = $this->nullableStringArg($args, 2, 'short');
-        $acceptsValue = $this->boolArg($args, 3, 'acceptsValue', false);
-        $multiple = $this->boolArg($args, 4, 'multiple', false);
-        $negatable = $this->boolArg($args, 5, 'negatable', false);
-        if ($name === null || $description === null || $short === false || $acceptsValue === null || $multiple === null || $negatable === null) {
-            $metadata['dynamic_fields'][] = 'options';
-        }
-        $short = $short === false ? null : $short;
-        $metadata['options'][] = [
+        return [
             'name' => $name,
-            'description' => $description,
-            'short' => $short,
-            'accepts_value' => $acceptsValue,
-            'multiple' => $multiple,
-            'negatable' => $negatable,
+            'route_name' => $route,
+            'handler' => $handler,
+            'source' => self::SOURCE,
+            'line' => $item->getStartLine(),
+            'handler_source' => $handlerSource,
+            'metadata' => $metadata,
+            'status' => $dynamic === [] ? 'resolved' : 'dynamic',
+            'dynamic_fields' => $dynamic,
         ];
     }
 
-    /** @param list<Node\Arg> $args */
-    private function stringArg(array $args, int $position, string $name, ?string $default = null): ?string
+    /** @return array{0:array<string,mixed>,1:?string} */
+    private function metadata(string $handler): array
     {
-        $expr = $this->arg($args, $position, $name);
-        if ($expr === null) {
-            return $default;
+        $candidates = array_values(array_filter(
+            $this->symbols->find($handler),
+            static fn (array $symbol): bool => $symbol['kind'] === 'class',
+        ));
+        if ($candidates === []) {
+            $this->diagnostic('symbol_not_found', self::SOURCE, null, sprintf('Command handler %s was not found in project source.', $handler));
+            $metadata = $this->emptyMetadata();
+            $metadata['dynamic_fields'] = ['definition'];
+            return [$metadata, null];
         }
-        return $expr instanceof Node\Scalar\String_ ? $expr->value : null;
+        if (count($candidates) !== 1) {
+            $this->diagnostic('ambiguous_symbol', self::SOURCE, null, sprintf('Command handler %s resolves to multiple project declarations.', $handler));
+            $metadata = $this->emptyMetadata();
+            $metadata['dynamic_fields'] = ['definition'];
+            return [$metadata, null];
+        }
+
+        $path = $candidates[0]['path'];
+        try {
+            $nodes = $this->parse($this->paths->projectFile($path), $path);
+        } catch (RuntimeException $error) {
+            $this->diagnostic('command_handler_source_invalid', $path, null, $error->getMessage());
+            $metadata = $this->emptyMetadata();
+            $metadata['dynamic_fields'] = ['definition'];
+            return [$metadata, $path];
+        }
+        if ($nodes === null) {
+            $metadata = $this->emptyMetadata();
+            $metadata['dynamic_fields'] = ['definition'];
+            return [$metadata, $path];
+        }
+
+        $class = $this->classNode($nodes, $handler);
+        if (!$class instanceof Node\Stmt\Class_) {
+            $this->diagnostic('symbol_not_found', $path, null, sprintf('Command handler class %s could not be matched to its source declaration.', $handler));
+            $metadata = $this->emptyMetadata();
+            $metadata['dynamic_fields'] = ['definition'];
+            return [$metadata, $path];
+        }
+
+        return [$this->definitions->scan($class), $path];
     }
 
-    /** @param list<Node\Arg> $args @return string|false|null */
-    private function nullableStringArg(array $args, int $position, string $name): string|false|null
+    /** @param list<Node\Stmt> $nodes */
+    private function returnedArray(array $nodes): ?Node\Expr\Array_
     {
-        $expr = $this->arg($args, $position, $name);
-        if ($expr === null || $this->nullLiteral($expr)) {
-            return null;
-        }
-        return $expr instanceof Node\Scalar\String_ ? $expr->value : false;
-    }
-
-    /** @param list<Node\Arg> $args */
-    private function boolArg(array $args, int $position, string $name, ?bool $default = null): ?bool
-    {
-        $expr = $this->arg($args, $position, $name);
-        if ($expr === null) {
-            return $default;
-        }
-        if (!$expr instanceof Node\Expr\ConstFetch) {
-            return null;
-        }
-        return match (strtolower($expr->name->toString())) {
-            'true' => true,
-            'false' => false,
-            default => null,
-        };
-    }
-
-    /** @param list<Node\Arg> $args */
-    private function runtimeArg(array $args, int $position, string $name): ?string
-    {
-        $expr = $this->arg($args, $position, $name);
-        if (!$expr instanceof Node\Expr\ClassConstFetch || !$expr->class instanceof Node\Name || !$expr->name instanceof Node\Identifier) {
-            return null;
-        }
-        $class = $expr->class->getAttribute('resolvedName');
-        $className = $class instanceof Node\Name ? $class->toString() : $expr->class->toString();
-        if ($className !== 'Infocyph\\Foundation\\Application\\RuntimeMode' && $className !== 'RuntimeMode') {
-            return null;
-        }
-
-        return match ($expr->name->toString()) {
-            'Cli' => 'cli',
-            'Scheduler' => 'scheduler',
-            'Web' => 'web',
-            'Worker' => 'worker',
-            default => null,
-        };
-    }
-
-    /** @param list<Node\Arg> $args */
-    private function arg(array $args, int $position, string $name): ?Node\Expr
-    {
-        foreach ($args as $index => $arg) {
-            if ($arg->name instanceof Node\Identifier && $arg->name->toString() === $name) {
-                return $arg->value;
-            }
-            if ($index === $position && $arg->name === null) {
-                return $arg->value;
+        foreach ($nodes as $node) {
+            if ($node instanceof Node\Stmt\Return_ && $node->expr instanceof Node\Expr\Array_) {
+                return $node->expr;
             }
         }
         return null;
     }
 
-    private function nullLiteral(Node\Expr $expr): bool
+    private function routeName(?Node\Expr $expr): ?string
     {
-        return $expr instanceof Node\Expr\ConstFetch && strtolower($expr->name->toString()) === 'null';
+        return $expr instanceof Node\Scalar\String_ ? $expr->value : null;
     }
 
-    private function fieldFor(string $method): string
+    private function handler(Node\Expr $expr): ?string
     {
-        return match ($method) {
-            'capability' => 'capabilities',
-            'alias' => 'aliases',
-            'argument' => 'arguments',
-            'option' => 'options',
-            default => $method,
-        };
+        if ($expr instanceof Node\Scalar\String_) {
+            return ltrim($expr->value, '\\');
+        }
+        if (
+            $expr instanceof Node\Expr\ClassConstFetch
+            && $expr->class instanceof Node\Name
+            && $expr->name instanceof Node\Identifier
+            && strtolower($expr->name->toString()) === 'class'
+        ) {
+            $resolved = $expr->class->getAttribute('resolvedName');
+            return ($resolved instanceof Node\Name ? $resolved : $expr->class)->toString();
+        }
+        return null;
+    }
+
+    /** @param list<Node\Stmt> $nodes */
+    private function classNode(array $nodes, string $handler): ?Node\Stmt\Class_
+    {
+        foreach ($nodes as $node) {
+            if ($node instanceof Node\Stmt\Namespace_) {
+                $class = $this->classNode($node->stmts, $handler);
+                if ($class !== null) {
+                    return $class;
+                }
+                continue;
+            }
+            if (!$node instanceof Node\Stmt\Class_) {
+                continue;
+            }
+            $name = $node->namespacedName?->toString() ?? $node->name?->toString();
+            if ($name === $handler) {
+                return $node;
+            }
+        }
+        return null;
+    }
+
+    /** @return list<Node\Stmt>|null */
+    private function parse(string $path, string $source): ?array
+    {
+        $this->secrets->assertAllowed($source);
+        try {
+            $nodes = $this->parser->parse($this->read($path));
+        } catch (Error $error) {
+            $this->diagnostic('parse_error', $source, $error->getStartLine() ?: null, $error->getRawMessage());
+            return null;
+        }
+        if (!is_array($nodes)) {
+            $this->diagnostic('parse_error', $source, null, 'PHP parser returned no syntax tree.');
+            return null;
+        }
+
+        $traverser = new NodeTraverser();
+        $traverser->addVisitor(new NameResolver(null, ['preserveOriginalNames' => true, 'replaceNodes' => false]));
+        try {
+            /** @var list<Node\Stmt> $resolved */
+            $resolved = $traverser->traverse($nodes);
+            return $resolved;
+        } catch (Error $error) {
+            $this->diagnostic('parse_error', $source, $error->getStartLine() ?: null, $error->getRawMessage());
+            return null;
+        }
+    }
+
+    private function read(string $path): string
+    {
+        $size = filesize($path);
+        if ($size !== false && $size > self::MAX_SOURCE_BYTES) {
+            throw new RuntimeException('Command source exceeds the 1 MiB inspection limit.');
+        }
+        $source = file_get_contents($path);
+        if ($source === false || strlen($source) > self::MAX_SOURCE_BYTES || str_contains($source, "\0")) {
+            throw new RuntimeException('Command source could not be read safely.');
+        }
+        return $source;
+    }
+
+    /** @param list<CommandEntry> $commands */
+    private function detectConflicts(array $commands): void
+    {
+        $seen = [];
+        foreach ($commands as $command) {
+            $names = [];
+            is_string($command['name']) && $command['name'] !== '' && $names[] = $command['name'];
+            foreach ($command['metadata']['aliases'] ?? [] as $alias) {
+                is_string($alias) && $alias !== '' && $names[] = $alias;
+            }
+            foreach ($names as $name) {
+                if (isset($seen[$name])) {
+                    $this->diagnostic('command_duplicate', self::SOURCE, $command['line'], sprintf('Command route or alias "%s" is registered more than once.', $name));
+                } else {
+                    $seen[$name] = true;
+                }
+            }
+        }
+    }
+
+    private function diagnostic(string $code, ?string $source, ?int $line, string $message): void
+    {
+        if (count($this->diagnostics) < self::MAX_DIAGNOSTICS) {
+            $this->diagnostics[] = compact('code', 'source', 'line', 'message');
+        }
     }
 
     /** @param list<string> $values @return list<string> */
@@ -301,8 +339,8 @@ final readonly class CommandDefinitionScanner
         return $values;
     }
 
-    /** @return CommandMetadata */
-    private function defaults(): array
+    /** @return array<string,mixed> */
+    private function emptyMetadata(): array
     {
         return [
             'name' => null,
