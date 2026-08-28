@@ -98,11 +98,14 @@ The required package contract is:
 {
     "require": {
         "php": "^8.4",
+        "composer-runtime-api": "^2.1",
         "mcp/sdk": "^0.8.0",
         "infocyph/phpforge": "dev-main@dev"
     }
 }
 ```
+
+`composer-runtime-api ^2.1` is a virtual Composer runtime contract, not a dependency on full `composer/composer`. It is required because Foundation MCP directly uses `Composer\InstalledVersions`, including `getInstallPath()` for the strictly root-matched runtime fallback path.
 
 `infocyph/phpforge` is **not** `require-dev` for Foundation MCP. It is a hard operational dependency of Foundation MCP.
 
@@ -393,22 +396,27 @@ Read:
 
 - project `composer.json`;
 - `composer.lock`;
-- `Composer\InstalledVersions` where suitable;
-- generated installed metadata when necessary;
-- installed package `composer.json` files.
+- `vendor/composer/installed.json` as the normal installed-state source;
+- `Composer\InstalledVersions` only when its reported root canonicalizes to the same resolved host project;
+- installed package `composer.json` files as lower-precedence metadata fallback.
+
+Never execute target-project `vendor/composer/installed.php` merely to inspect Composer state. Foundation MCP must not turn generated PHP metadata into an execution path when equivalent JSON metadata is available.
+
+Composer metadata reads are bounded; the initial production limit is 32 MiB per Composer metadata JSON file. Package install paths are canonicalized with `realpath()` before being authorized. Composer path-repository/symlink installs may resolve outside the host root and are allowed only because their canonical root came from that project's installed Composer metadata.
 
 Expose:
 
 - runtime/dev direct dependencies;
 - transitive graph;
-- exact locked/installed versions;
-- source references;
-- install paths;
+- exact locked/installed versions kept as distinct values;
+- locked/installed source references kept as distinct values;
+- deterministic package state such as matched, declared-unlocked, missing-install, installed-unlocked, version-mismatch and source-reference-mismatch;
+- canonical install paths;
 - autoload mappings;
 - suggest/provide/replace/conflict metadata;
-- PHP/platform requirements;
-- package ownership;
-- missing package and lock/install mismatch diagnostics.
+- runtime/dev PHP/platform requirements;
+- package ownership by canonical install root;
+- missing package, invalid metadata and lock/install mismatch diagnostics.
 
 Do not implement a Composer solver and do not require full `composer/composer` just to inspect local metadata.
 
@@ -966,6 +974,11 @@ unsupported_project
 phpforge_unavailable
 analysis_backend_unavailable
 analysis_backend_incompatible
+composer_lock_missing
+composer_lock_invalid
+installed_metadata_missing
+installed_metadata_invalid
+dependency_state_mismatch
 resource_not_found
 package_not_installed
 symbol_not_found
@@ -1041,6 +1054,7 @@ Foundation-MCP/
 │   │   └── SourceRoots.php
 │   ├── Composer/
 │   │   ├── ComposerInspector.php
+│   │   ├── ComposerMetadataReader.php
 │   │   ├── InstalledPackage.php
 │   │   └── DependencyGraph.php
 │   ├── Analysis/
@@ -1104,7 +1118,7 @@ Foundation-MCP/
 └── PROJECT_PLAN.md
 ```
 
-Avoid interfaces/classes created only for symmetry. Introduce abstractions only at real replaceable/testing boundaries.
+Avoid interfaces/classes created only for symmetry. Introduce abstractions only at real replaceable/testing boundaries. `ComposerMetadataReader` is an intentional boundary between bounded raw Composer artifact acquisition and semantic package/graph correlation; it keeps file/runtime metadata mechanics out of `ComposerInspector`.
 
 ---
 
@@ -1268,7 +1282,7 @@ The first release includes the entire intended scope; no desired capability is i
 [ ] explicit MCP registration
 [x] Infbyte/custom-Foundation project detection
 [x] secure root/package path model
-[ ] Composer exact-version/package graph
+[x] Composer exact-version/package graph
 [ ] installed Foundation ModuleCatalog parser
 [ ] purpose-first module intelligence
 [ ] PHPForge-backed AST/source analyzer
@@ -1329,6 +1343,7 @@ Update this checklist after each meaningful implementation chunk. Do not mark an
 - `092e1ad9` — package skeleton, Composer contract, executable and initial SDK STDIO bootstrap.
 - `ac78615a` — initial `doctor` dependency checks for the MCP SDK, PHPForge and PHP parser availability.
 - `feat: add project detection and filesystem security model` — strict CLI root handling; immutable project context; renamed-canonical Infbyte/custom/unsupported classification; Composer-autoload source roots; project/package path containment; traversal/absolute/symlink-escape rejection; hard secret-file policy; output redaction; PHPForge parser parse-probe; unit coverage; PHP 8.4 syntax validation and local smoke validation.
+- `feat: add Composer and Foundation package intelligence` — distinct declared/locked/installed package truth; runtime/dev direct dependencies; bounded transitive graph; source-reference and install-path state; `installed.json` normal path with root-proven `InstalledVersions` fallback; no `installed.php` execution; installed package composer metadata fallback; platform requirements; canonical package ownership/roots; Foundation exact-version diagnostics; lock/install mismatch diagnostics; focused unit coverage; PHP 8.4 syntax and standalone smoke validation.
 
 The overall `mcp/sdk STDIO integration`, `explicit MCP registration`, `doctor command`, and broad test-suite checklist entries remain intentionally open until their complete production contracts are exercised by protocol/integration/ecosystem coverage.
 
@@ -1362,7 +1377,7 @@ All steps target the same production release:
 Foundation MCP is production-release ready only when:
 
 1. Infbyte can require `infocyph/foundation-mcp` only under `require-dev`.
-2. Foundation MCP directly requires `infocyph/phpforge: dev-main@dev` and `mcp/sdk ^0.8.0`.
+2. Foundation MCP directly requires `composer-runtime-api ^2.1`, `infocyph/phpforge: dev-main@dev` and `mcp/sdk ^0.8.0`.
 3. It does not duplicate PHPForge's parser/static-analysis toolchain in its Composer requirements.
 4. `doctor` proves the required PHPForge/parser analysis capability is installed and compatible.
 5. `vendor/bin/foundation-mcp` exposes the complete STDIO MCP surface.

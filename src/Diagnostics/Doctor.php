@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Infocyph\FoundationMcp\Diagnostics;
 
 use Composer\InstalledVersions;
+use Infocyph\FoundationMcp\Composer\ComposerInspector;
 use Infocyph\FoundationMcp\Project\Project;
 use Infocyph\FoundationMcp\Project\ProjectDetector;
 use Infocyph\FoundationMcp\Project\ProjectLocator;
@@ -40,8 +41,11 @@ final readonly class Doctor
             $checks[] = $this->projectCheck($project);
 
             if ($project->supported()) {
+                $composer = new ComposerInspector($project);
+                $checks[] = $this->composerCheck($composer);
+                $checks[] = $this->foundationCheck($composer);
                 $checks[] = $this->sourceRootsCheck($project);
-                $checks[] = $this->securityCheck($project);
+                $checks[] = $this->securityCheck($project, $composer);
             }
         } catch (Throwable $exception) {
             $checks[] = [
@@ -75,9 +79,7 @@ final readonly class Doctor
         return $failed ? 1 : 0;
     }
 
-    /**
-     * @return array{name: string, ok: bool, detail: string}
-     */
+    /** @return array{name: string, ok: bool, detail: string} */
     private function phpCheck(): array
     {
         $ok = PHP_VERSION_ID >= 80400;
@@ -89,9 +91,7 @@ final readonly class Doctor
         ];
     }
 
-    /**
-     * @return array{name: string, ok: bool, detail: string}
-     */
+    /** @return array{name: string, ok: bool, detail: string} */
     private function packageCheck(string $package, string $label): array
     {
         try {
@@ -114,9 +114,7 @@ final readonly class Doctor
         ];
     }
 
-    /**
-     * @return array{name: string, ok: bool, detail: string}
-     */
+    /** @return array{name: string, ok: bool, detail: string} */
     private function parserCheck(): array
     {
         if (!class_exists(ParserFactory::class)) {
@@ -146,9 +144,7 @@ final readonly class Doctor
         ];
     }
 
-    /**
-     * @return array{name: string, ok: bool, detail: string}
-     */
+    /** @return array{name: string, ok: bool, detail: string} */
     private function projectCheck(Project $project): array
     {
         return [
@@ -158,9 +154,53 @@ final readonly class Doctor
         ];
     }
 
-    /**
-     * @return array{name: string, ok: bool, detail: string}
-     */
+    /** @return array{name: string, ok: bool, detail: string} */
+    private function composerCheck(ComposerInspector $composer): array
+    {
+        $diagnostics = $composer->diagnostics();
+        $ok = $composer->lockPresent() && $composer->installedMetadataPresent() && $diagnostics === [];
+        $detail = $ok
+            ? count($composer->packages()).' packages; lock/install state aligned'
+            : implode(', ', array_slice(array_column($diagnostics, 'code'), 0, 4));
+
+        return [
+            'name' => 'Composer state',
+            'ok' => $ok,
+            'detail' => $detail !== '' ? $detail : 'Composer metadata incomplete',
+        ];
+    }
+
+    /** @return array{name: string, ok: bool, detail: string} */
+    private function foundationCheck(ComposerInspector $composer): array
+    {
+        $foundation = $composer->foundation();
+        $ok = $foundation !== null
+            && $foundation->declaredConstraint !== null
+            && $foundation->lockedVersion !== null
+            && $foundation->installedVersion !== null
+            && $foundation->installPath !== null
+            && $foundation->state() === 'matched';
+
+        if ($foundation === null) {
+            $detail = 'not declared, locked or installed';
+        } else {
+            $detail = sprintf(
+                'declared=%s locked=%s installed=%s state=%s',
+                $foundation->declaredConstraint ?? 'none',
+                $foundation->lockedVersion ?? 'none',
+                $foundation->installedVersion ?? 'none',
+                $foundation->state(),
+            );
+        }
+
+        return [
+            'name' => 'Foundation package',
+            'ok' => $ok,
+            'detail' => $detail,
+        ];
+    }
+
+    /** @return array{name: string, ok: bool, detail: string} */
     private function sourceRootsCheck(Project $project): array
     {
         $roots = SourceRoots::discover($project);
@@ -172,14 +212,18 @@ final readonly class Doctor
         ];
     }
 
-    /**
-     * @return array{name: string, ok: bool, detail: string}
-     */
-    private function securityCheck(Project $project): array
+    /** @return array{name: string, ok: bool, detail: string} */
+    private function securityCheck(Project $project, ComposerInspector $composer): array
     {
         try {
-            $paths = new PathPolicy($project->root);
+            $paths = new PathPolicy($project->root, $composer->packageRoots());
             $paths->projectFile('composer.json');
+
+            $foundation = $composer->foundation();
+
+            if ($foundation?->installPath !== null) {
+                $paths->packageDirectory('infocyph/foundation', '.');
+            }
 
             $secrets = new SecretPolicy();
             $ok = $secrets->denied('.env') && !$secrets->denied('.env.example');
@@ -194,7 +238,7 @@ final readonly class Doctor
         return [
             'name' => 'Path/security policy',
             'ok' => $ok,
-            'detail' => $ok ? 'ready' : 'secret policy invariant failed',
+            'detail' => $ok ? count($paths->packageRoots()).' package roots approved' : 'secret policy invariant failed',
         ];
     }
 }

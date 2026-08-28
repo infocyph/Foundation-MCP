@@ -13,6 +13,7 @@ Current baseline:
 - PHP 8.4+
 - official `mcp/sdk ^0.8.0`
 - mandatory `infocyph/phpforge: dev-main@dev`
+- `composer-runtime-api ^2.1` for Composer runtime metadata compatibility
 - MCP over STDIO only
 - explicit MCP capability registration only
 - zero application bootstrap for inspection
@@ -40,10 +41,14 @@ STDOUT is reserved for MCP protocol messages. Diagnostics are written to STDERR.
 
 ## Architecture
 
-SDK/protocol-specific code lives under `src/Mcp/`. Project, Composer, Foundation, analysis, Git, security and resource intelligence will remain independent of MCP protocol concerns as the implementation progresses.
+SDK/protocol-specific code lives under `src/Mcp/`. Project, Composer, Foundation, analysis, Git, security and resource intelligence remain independent of MCP protocol concerns.
+
+Composer intelligence reads the target project's `composer.json`, `composer.lock` and `vendor/composer/installed.json` without executing host package source or generated `installed.php`. `Composer\InstalledVersions` is only a fallback when its runtime root is proven to be the same resolved project.
 
 ## Security contract
 
 Foundation MCP is designed as a context server, not a control plane. It will not expose arbitrary shell execution, project mutation, Composer mutation, Git mutation, application bootstrap or normal-operation network access.
+
+Composer package source access is authorized only through canonical install roots obtained from the inspected project's Composer metadata.
 
 See [`PROJECT_PLAN.md`](PROJECT_PLAN.md) for the complete production contract.
