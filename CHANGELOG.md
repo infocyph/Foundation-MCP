@@ -28,3 +28,7 @@ All notable changes to Foundation MCP will be documented in this file.
 - Static Foundation/Webrick route, console-command, provider and configuration inspectors with installed-package contract derivation and dynamic-state preservation.
 - Static Foundation schedule inspection with timing, identity, lock, timeout and memory policies derived from installed scheduling contracts.
 - Distinct Foundation maintenance-worker and Omnibus messaging-worker inspection, including bounded/redacted `routes/workers.php` analysis and installed `WorkerOptions` schema derivation for `config/messaging.php`.
+- Static Foundation runtime/bootstrap inspection with installed runtime-contract derivation, explicit web/CLI/worker/scheduler graph selection, preset awareness, semantic project-root handling and redacted inline options.
+- Read-only Git workspace inspection through a fixed argument-vector command surface, including HEAD/branch/detached state, staged/unstaged/untracked/rename status, PHP declaration/reference deltas, structural areas and initial related-test impact.
+- Composer dependency-change analysis against Git HEAD for direct constraints/scopes, locked versions/source references, transitive changes, affected Foundation modules and project references to changed package namespaces.
+- Bounded deterministic impact analysis for symbols, files, packages, modules, routes, config and current workspace changes with exact/resolved/lexical/dynamic evidence kept distinct.

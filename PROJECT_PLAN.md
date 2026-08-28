@@ -450,7 +450,7 @@ The analyzer works in-process through the PHP parser supplied by the mandatory P
 
 Project source is constrained to approved project paths; package source is authorized only for the package explicitly requested using Composer-resolved install roots. Reads are limited to `.php` regular files, protected by the secret policy and bounded to 2 MiB per source file. Literal extraction is independently bounded by array count, item count, depth and string size.
 
-Parse errors are file-local structured results. One malformed PHP file must not make the analyzer unusable for unrelated files. Unchanged analysis is cached by canonical file identity plus content fingerprint and automatically invalidates when source content changes.
+Parse errors are file-local structured results. One malformed PHP file must not make the analyzer unusable for unrelated files. Unchanged analysis is cached by canonical file identity plus content fingerprint and automatically invalidates when source content changes. The same parser pipeline may analyze trusted in-memory source obtained from another approved boundary, such as Git `HEAD`, so workspace deltas do not require temporary project files or source execution.
 
 The server must never `require` arbitrary project/package source files for discovery and must never use Reflection against host application classes as its primary analysis mechanism.
 
@@ -588,7 +588,9 @@ Keep distinct:
 
 ### Runtime/bootstrap
 
-Inspect bootstrap runtime selection, base path and inline options. Preserve the four explicit Foundation runtime graphs.
+`RuntimeInspector` statically reads `bootstrap/app.php` and derives the available public runtime entry points from the installed Foundation `src/Foundation.php` contract instead of copying a mutable registry. It preserves exactly the `web`, `cli`, `worker` and `scheduler` graphs, resolves `Foundation::preset(RuntimeMode, preset, config)` where statically possible, records the selected runtime/preset/source line, and evaluates bounded/redacted inline bootstrap options through the same config extractor used elsewhere.
+
+Canonical `dirname(__DIR__)` / equivalent bootstrap-root expressions are returned semantically as `project_root`; arbitrary absolute or parent-traversing base paths are not exposed. Dynamic runtime, preset, config and base-path expressions remain explicitly dynamic. Neither the host bootstrap nor installed Foundation runtime methods are executed.
 
 ### Modules
 
@@ -664,18 +666,20 @@ File targets are canonicalized through the project `PathPolicy`. Files without P
 
 Git integration is read-only and optional.
 
+`GitRunner` is the only Git subprocess boundary. It uses argument-vector `proc_open()` calls with `bypass_shell`, a fixed read-only operation surface and no caller-selectable Git refs. `WorkspaceInspector` reads only status/HEAD/branch and approved `HEAD:<project-relative-path>` blobs; project-relative Git paths are normalized, secret-checked and denied for traversal or `.git` metadata access.
+
 Expose:
 
 - branch/HEAD/detached state;
 - dirty state;
 - staged/unstaged/untracked files;
-- add/delete/rename status;
-- changed PHP declarations/references;
-- route/command/provider/config/module/worker/schedule changes;
-- Composer dependency changes;
-- initial affected tests/symbols.
+- add/delete/rename/copy/type/unmerged status;
+- changed PHP declarations/references by comparing current approved source with the fixed Git `HEAD` baseline through the same in-process PHP analyzer;
+- route/command/provider/config/module/worker/schedule/runtime/composer structural change areas;
+- Composer dependency-change signal;
+- initial affected tests/symbols through the existing related-test/index layers.
 
-Use argument-safe `proc_open()` calls and a fixed read-only Git allowlist.
+Status output is NUL-delimited and bounded; workspace results are capped to 500 changed files, deeper PHP delta analysis to 200 changed PHP files and initial related tests to 100. Git errors become diagnostics rather than application bootstrap paths.
 
 Never call through `sh -c`, `bash -c`, `cmd /c` or PowerShell command strings.
 
@@ -685,6 +689,8 @@ No mutating Git command is permitted.
 
 ## 21. Dependency and Change Impact
 
+`DependencyChangeAnalyzer` compares the current Composer working tree with the fixed Git `HEAD` baseline without invoking Composer or accepting arbitrary refs. Composer JSON reads retain the 32 MiB-class bound and invalid/missing baselines become structured diagnostics.
+
 When Composer files change, detect:
 
 - package additions/removals;
@@ -693,10 +699,12 @@ When Composer files change, detect:
 - runtime/dev movement;
 - source-reference changes;
 - changed transitive set;
-- affected Foundation modules;
-- project code referencing changed packages.
+- affected Foundation modules through the installed `ModuleCatalog`;
+- project code referencing changed packages by correlating current/baseline package PSR-4 metadata with the project reference index.
 
-Provide deterministic bounded impact analysis for:
+Project-reference correlation is capped to 500 entries and does not scan package source or all of `vendor/`.
+
+`ImpactAnalyzer` provides deterministic bounded impact analysis for:
 
 ```text
 symbol
@@ -708,9 +716,9 @@ config
 workspace changes
 ```
 
-Combine evidence from references, inheritance, implementations, traits, registrations, module/package graph, config relationships, Git changes and related tests.
+It combines declaration/reference evidence, dependency dependents, purpose-first modules, route/config registrations, Git workspace deltas, Composer changes and related tests. Symbol ambiguity is rejected rather than guessed. Package impact is namespace/graph aware; module impact expands only catalog-owned package/config relationships; route/config impact is delegated to the existing static inspectors; current-change impact consumes workspace/dependency results instead of reparsing diffs independently.
 
-Direct evidence and lexical/inferred evidence must remain distinguishable.
+Every evidence record retains an explicit confidence (`exact`, `resolved`, `lexical`, `dynamic`) and reason so direct evidence remains distinguishable from inferred evidence. Impact results are deterministically sorted and hard-bounded to at most 200 requested entries, with internal evidence accumulation also capped.
 
 ---
 
@@ -945,7 +953,7 @@ foundation_read
   -> only required lines
 ```
 
-The underlying search/read services already enforce their own hard limits before MCP serialization: search returns at most 100 ranked results and 240-byte excerpts; text scanning is bounded by files and bytes; reads are limited to 1 MiB and 400 lines. Related-test discovery is also capped at 100 results and its lexical fallback at 256 KiB per file / 8 MiB total. MCP handlers may impose tighter defaults but must never widen these service limits.
+The underlying search/read services already enforce their own hard limits before MCP serialization: search returns at most 100 ranked results and 240-byte excerpts; text scanning is bounded by files and bytes; reads are limited to 1 MiB and 400 lines. Related-test discovery is also capped at 100 results and its lexical fallback at 256 KiB per file / 8 MiB total. Workspace inspection is capped to 500 files / 200 PHP deltas / 100 initial tests, dependency-reference correlation to 500 entries, Git subprocess output to 4 MiB and impact requests to 200 results. MCP handlers may impose tighter defaults but must never widen these service limits.
 
 Never return whole repositories or many full source files from a search call.
 
@@ -982,7 +990,7 @@ Build symbol/reference/route/etc. indexes only when the requested operation need
 
 Never scan all `vendor/` or parse every installed dependency on startup.
 
-Path/text search remains parser-free. Symbol search activates only the relevant project or explicit-package symbol index. Search does not scan every installed dependency: Foundation is a known target and any other dependency target must be explicit. Related-test discovery reuses the already-lazy project symbol/reference indexes and scans only discovered test roots for bounded lexical fallback.
+Path/text search remains parser-free. Symbol search activates only the relevant project or explicit-package symbol index. Search does not scan every installed dependency: Foundation is a known target and any other dependency target must be explicit. Related-test discovery reuses the already-lazy project symbol/reference indexes and scans only discovered test roots for bounded lexical fallback. Git status/HEAD inspection remains metadata-first; PHP, dependency and impact indexes are activated only when change intelligence requires them.
 
 ### In-memory cache
 
@@ -1092,7 +1100,8 @@ Foundation-MCP/
 │   │   ├── ComposerInspector.php
 │   │   ├── ComposerMetadataReader.php
 │   │   ├── InstalledPackage.php
-│   │   └── DependencyGraph.php
+│   │   ├── DependencyGraph.php
+│   │   └── DependencyChangeAnalyzer.php
 │   ├── Analysis/
 │   │   ├── AnalyzedFile.php
 │   │   ├── PhpAnalyzer.php
@@ -1117,7 +1126,9 @@ Foundation-MCP/
 │   │   ├── OmnibusWorkerInspector.php
 │   │   ├── WorkerInspector.php
 │   │   ├── ScheduleInspector.php
-│   │   └── RuntimeInspector.php
+│   │   ├── RuntimeInspector.php
+│   │   └── Internal/
+│   │       └── InstalledRuntimeContract.php
 │   ├── Git/
 │   │   ├── GitRunner.php
 │   │   └── WorkspaceInspector.php
@@ -1162,7 +1173,7 @@ Foundation-MCP/
 └── PROJECT_PLAN.md
 ```
 
-Avoid interfaces/classes created only for symmetry. Introduce abstractions only at real replaceable/testing boundaries. `ComposerMetadataReader` is an intentional boundary between bounded raw Composer artifact acquisition and semantic package/graph correlation; it keeps file/runtime metadata mechanics out of `ComposerInspector`. `SourceFileFinder` is the shared PHP source-manifest boundary used by the lazy symbol/reference indexes; it centralizes PHP-source exclusion, secret, symlink and Composer-autoload discovery. `SearchEngine` owns a separate bounded text/resource discovery path because search also covers non-PHP project/config/route/doc files and must not force AST parsing. `ResourceReader` is the single safe line-range read service reused by later MCP read/resource handlers. `TestLocator` is a ranking layer over the existing indexes/source manifest rather than another parser/index. `WorkerInspector` is a deliberate semantic aggregator: its two concrete inspectors preserve Foundation maintenance-worker and Omnibus messaging-worker ownership instead of creating a generic worker abstraction.
+Avoid interfaces/classes created only for symmetry. Introduce abstractions only at real replaceable/testing boundaries. `ComposerMetadataReader` is an intentional boundary between bounded raw Composer artifact acquisition and semantic package/graph correlation; it keeps file/runtime metadata mechanics out of `ComposerInspector`. `SourceFileFinder` is the shared PHP source-manifest boundary used by the lazy symbol/reference indexes; it centralizes PHP-source exclusion, secret, symlink and Composer-autoload discovery. `SearchEngine` owns a separate bounded text/resource discovery path because search also covers non-PHP project/config/route/doc files and must not force AST parsing. `ResourceReader` is the single safe line-range read service reused by later MCP read/resource handlers. `TestLocator` is a ranking layer over the existing indexes/source manifest rather than another parser/index. `WorkerInspector` is a deliberate semantic aggregator: its two concrete inspectors preserve Foundation maintenance-worker and Omnibus messaging-worker ownership instead of creating a generic worker abstraction. `GitRunner` is a narrow command-safety boundary rather than a generic process abstraction; `DependencyChangeAnalyzer` owns Composer snapshot comparison, while `ImpactAnalyzer` is the evidence-composition layer over existing domain services.
 
 ---
 
@@ -1170,7 +1181,7 @@ Avoid interfaces/classes created only for symmetry. Introduce abstractions only 
 
 ### Unit
 
-Cover project detection, Composer graph, ModuleCatalog parsing, PHP analysis, symbols/references, search ranking, routes, commands, providers, config, schedules, workers, Git parsing, impact analysis, related tests, redaction, path security and output limits.
+Cover project detection, Composer graph, ModuleCatalog parsing, PHP analysis, symbols/references, search ranking, routes, commands, providers, config, schedules, workers, runtime/bootstrap, Git parsing, dependency changes, impact analysis, related tests, redaction, path security and output limits.
 
 ### Integration fixtures
 
@@ -1341,10 +1352,10 @@ The first release includes the entire intended scope; no desired capability is i
 [x] schedule inspector
 [x] Foundation maintenance-worker inspector
 [x] Omnibus worker distinction
-[ ] runtime/bootstrap inspector
-[ ] Git workspace inspector
-[ ] dependency-change analyzer
-[ ] impact analyzer
+[x] runtime/bootstrap inspector
+[x] Git workspace inspector
+[x] dependency-change analyzer
+[x] impact analyzer
 [ ] foundation_project
 [ ] foundation_search
 [ ] foundation_read
@@ -1401,6 +1412,7 @@ Update this checklist after each meaningful implementation chunk. Do not mark an
 - `385648e8` — static `routes/schedule.php` inspection with installed Foundation schedule/fluent contracts, command arguments, cron shortcuts, timezone/key identity, overlap/single-server locking, timeout/memory policy, conditional/dynamic state and bounded non-executing source analysis.
 - `0875871e`, `7816c2b5` — Foundation maintenance-worker inspection limited to `routes/workers.php`, supporting bounded static array/provider-callback declarations, conditional/dynamic status, Foundation-version evidence and recursive secret redaction without worker/application execution.
 - `1172426e`, `3666c446` — Omnibus messaging-worker inspection limited to `config/messaging.php`, worker/default-worker grouping, installed `WorkerOptions` promoted-field schema derivation through the explicitly authorized Omnibus package root, and an explicit two-category `WorkerInspector` result that prevents maintenance/messaging worker conflation.
+- `feat: add runtime and change impact intelligence` — installed-contract-derived runtime/bootstrap inspection with four explicit Foundation graphs, presets, semantic project-root handling and redacted inline options; fixed read-only argument-vector Git boundary with branch/HEAD/status and approved HEAD-file reads; current-vs-HEAD PHP declaration/reference deltas and structural change areas; Composer direct/lock/transitive/source-reference change analysis with ModuleCatalog and project-reference correlation; bounded evidence-based impact analysis for symbol/file/package/module/route/config/current changes; focused tests for runtime non-execution/dynamic state, staged/unstaged/untracked/rename parsing, Git path safety, dependency scope/version/reference/transitive/module/source-reference correlation, and all impact target families. PHP 8.4 syntax validation passed for every new/modified source and focused test file; dependency-complete Pest/PHPForge execution remains for CI/integration validation.
 
 The overall `mcp/sdk STDIO integration`, `explicit MCP registration`, `doctor command`, `bounded output`, `lazy in-memory cache/invalidation` and broad test-suite checklist entries remain intentionally open until their complete production contracts are exercised across the relevant service/index/protocol/integration layers.
 

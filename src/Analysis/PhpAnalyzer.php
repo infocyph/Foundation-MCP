@@ -41,29 +41,37 @@ final class PhpAnalyzer
 
     public function project(string $path): AnalyzedFile
     {
-        return $this->source($this->projectPaths->projectFile($this->allowedPath($path)), 'project', null, $path);
+        $path = $this->allowedPath($path);
+        return $this->analyze($this->read($this->projectPaths->projectFile($path)), 'project', null, $path, 'project-file:'.$path);
     }
 
     public function package(string $package, string $path): AnalyzedFile
     {
+        $path = $this->allowedPath($path);
         $roots = $this->composer->packageRoots([$package]);
-
         if (!isset($roots[$package])) {
             throw new RuntimeException('Package is not installed with an approved source root.');
         }
-
         $paths = new PathPolicy($this->project->root, $roots);
-
-        return $this->source($paths->packageFile($package, $this->allowedPath($path)), 'package', $package, $path);
+        return $this->analyze($this->read($paths->packageFile($package, $path)), 'package', $package, $path, 'package-file:'.$package.':'.$path);
     }
 
-    private function source(string $resolved, string $scope, ?string $package, string $path): AnalyzedFile
+    /**
+     * Analyze trusted in-memory PHP text obtained through another approved read boundary, such as Git HEAD.
+     * The path is still subjected to the normal PHP/secret policy and no source is executed.
+     */
+    public function text(string $path, string $source, string $scope = 'project', ?string $package = null): AnalyzedFile
     {
-        $source = $this->read($resolved);
-        $fingerprint = hash('sha256', $source);
-        $cacheKey = $scope."\0".($package ?? '')."\0".$resolved;
-        $cached = $this->cache[$cacheKey] ?? null;
+        $path = $this->allowedPath($path);
+        $this->assertSource($source);
+        return $this->analyze($source, $scope, $package, $path, 'text:'.$scope.':'.($package ?? '').':'.$path);
+    }
 
+    private function analyze(string $source, string $scope, ?string $package, string $path, string $cacheIdentity): AnalyzedFile
+    {
+        $fingerprint = hash('sha256', $source);
+        $cacheKey = $cacheIdentity;
+        $cached = $this->cache[$cacheKey] ?? null;
         if ($cached !== null && hash_equals($cached->fingerprint, $fingerprint)) {
             return $cached;
         }
@@ -73,7 +81,6 @@ final class PhpAnalyzer
         } catch (Error $error) {
             return $this->cache[$cacheKey] = $this->parseFailure($scope, $package, $path, $fingerprint, $source, $error);
         }
-
         if (!is_array($nodes)) {
             throw new RuntimeException('PHP parser returned no syntax tree.');
         }
@@ -141,36 +148,33 @@ final class PhpAnalyzer
     private function read(string $path): string
     {
         $size = filesize($path);
-
         if ($size !== false && $size > self::MAX_SOURCE_BYTES) {
             throw new RuntimeException('PHP source exceeds the 2 MiB analysis limit.');
         }
-
         $source = file_get_contents($path);
-
         if ($source === false) {
             throw new RuntimeException('Unable to read PHP source.');
         }
+        $this->assertSource($source);
+        return $source;
+    }
 
+    private function assertSource(string $source): void
+    {
         if (strlen($source) > self::MAX_SOURCE_BYTES) {
             throw new RuntimeException('PHP source exceeds the 2 MiB analysis limit.');
         }
-
         if (str_contains($source, "\0")) {
             throw new RuntimeException('Binary PHP source is not supported.');
         }
-
-        return $source;
     }
 
     private function allowedPath(string $path): string
     {
         $this->secrets->assertAllowed($path);
-
         if (strtolower(pathinfo(str_replace('\\', '/', $path), PATHINFO_EXTENSION)) !== 'php') {
             throw new RuntimeException('PHP analysis accepts only .php source files.');
         }
-
         return $path;
     }
 
@@ -178,15 +182,12 @@ final class PhpAnalyzer
     {
         $path = str_replace('\\', '/', $path);
         $parts = [];
-
         foreach (explode('/', $path) as $part) {
             if ($part === '' || $part === '.') {
                 continue;
             }
-
             $parts[] = $part;
         }
-
         return implode('/', $parts);
     }
 }
