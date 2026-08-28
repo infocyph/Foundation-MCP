@@ -755,9 +755,15 @@ path
 text
 ```
 
+The domain search engine uses deterministic score bands and stable tie-breakers. Pure path/text searches do not invoke the PHP parser. Symbol searches activate only the relevant lazy symbol index. `packages` requires an explicit installed package; `all` searches the project plus installed Foundation and, when supplied, one explicit package rather than scanning all of `vendor/`.
+
+Search output is hard-bounded to 100 results. Resource discovery is capped at 2,500 files per target; text search reads at most 512 KiB per file and 16 MiB total per target, skips secret/binary/oversized resources and emits redacted excerpts capped at 240 bytes.
+
 ### `foundation_read`
 
 Bounded safe read of approved project/dependency resources with line ranges and secret/path protection.
+
+The shared reader canonicalizes project/package paths through `PathPolicy`, requires an explicitly selected installed package for dependency reads, denies secret-bearing and binary resources, caps a file at 1 MiB and a response at 400 lines (200 default), redacts suspicious literals, and returns canonical relative path, actual line range, total lines, size, SHA-256 fingerprint and truncation state.
 
 ### `foundation_symbol`
 
@@ -931,6 +937,8 @@ foundation_read
   -> only required lines
 ```
 
+The underlying search/read services already enforce their own hard limits before MCP serialization: search returns at most 100 ranked results and 240-byte excerpts; text scanning is bounded by files and bytes; reads are limited to 1 MiB and 400 lines. MCP handlers may impose tighter defaults but must never widen these service limits.
+
 Never return whole repositories or many full source files from a search call.
 
 ---
@@ -965,6 +973,8 @@ Use:
 Build symbol/reference/route/etc. indexes only when the requested operation needs them.
 
 Never scan all `vendor/` or parse every installed dependency on startup.
+
+Path/text search remains parser-free. Symbol search activates only the relevant project or explicit-package symbol index. Search does not scan every installed dependency: Foundation is a known target and any other dependency target must be explicit.
 
 ### In-memory cache
 
@@ -1142,7 +1152,7 @@ Foundation-MCP/
 └── PROJECT_PLAN.md
 ```
 
-Avoid interfaces/classes created only for symmetry. Introduce abstractions only at real replaceable/testing boundaries. `ComposerMetadataReader` is an intentional boundary between bounded raw Composer artifact acquisition and semantic package/graph correlation; it keeps file/runtime metadata mechanics out of `ComposerInspector`. `SourceFileFinder` is the shared source-manifest boundary used by lazy symbol/reference/search intelligence; it centralizes exclusion, secret, symlink and Composer-autoload discovery instead of duplicating recursive scans across indexes.
+Avoid interfaces/classes created only for symmetry. Introduce abstractions only at real replaceable/testing boundaries. `ComposerMetadataReader` is an intentional boundary between bounded raw Composer artifact acquisition and semantic package/graph correlation; it keeps file/runtime metadata mechanics out of `ComposerInspector`. `SourceFileFinder` is the shared PHP source-manifest boundary used by the lazy symbol/reference indexes; it centralizes PHP-source exclusion, secret, symlink and Composer-autoload discovery. `SearchEngine` owns a separate bounded text/resource discovery path because search also covers non-PHP project/config/route/doc files and must not force AST parsing. `ResourceReader` is the single safe line-range read service reused by later MCP read/resource handlers.
 
 ---
 
@@ -1312,7 +1322,7 @@ The first release includes the entire intended scope; no desired capability is i
 [x] PHPForge-backed AST/source analyzer
 [x] lazy symbol index
 [x] lazy reference/usage index
-[ ] deterministic search/read
+[x] deterministic search/read
 [ ] related-test discovery
 [ ] route inspector
 [ ] command inspector
@@ -1371,9 +1381,10 @@ Update this checklist after each meaningful implementation chunk. Do not mark an
 - `9b0844b5` — bounded static parsing of installed Foundation `ModuleCatalog::MODULES` through the PHPForge-provided PHP parser; literal-only evaluation with dynamic-expression rejection; module/alias/package resolution with ambiguity checks; Composer package/config correlation; built-in/package/config/runtime-activation-safe statuses; ModuleCatalog doctor gate; focused unit coverage added; PHP 8.4 syntax validation passed locally. The dependency-complete Pest/PHPForge suite remains for CI/integration validation.
 - `617c5e9d` — PHPForge-supplied in-process PHP parser backend; compact declarations/signatures/imports/inheritance/traits/attributes/PHPDoc extraction; promoted properties/constants/enum cases; resolved/lexical/dynamic reference extraction; bounded literal arrays; explicit-project and explicit-package path authorization; secret/file/size controls; file-local parse errors; content-fingerprint cache invalidation; focused unit coverage. Local PHP 8.4 syntax validation passed for the analyzer result/entry point and literal visitor; the dependency-complete Pest/PHPForge suite remains for CI/integration validation.
 - `e8ec06af` — Composer/host-aware PHP source discovery; project-only lazy symbol build; explicitly requested package-only lazy build; excluded/secret/symlink path filtering; compact symbol ownership/source metadata; deterministic exact/case-folded lookup with duplicate ambiguity preserved; incremental added/changed/removed file refresh; per-file parse/analysis diagnostics; focused unit coverage including no-op refresh and single-file invalidation. Local PHP 8.4 syntax probes passed for the new source-finder/index constructs; the dependency-complete Pest/PHPForge suite remains for CI/integration validation.
-- `feat: add lazy reference index` — lazy project/package reference indexing over the shared source manifest/analyzer; import/generic PHP relationships; source-symbol attribution; relationship/kind-aware unique-declaration promotion to exact confidence; lexical/dynamic preservation; deterministic bounded usage lookup with relationship filters; incremental refresh; per-file diagnostics; focused coverage for false-positive exactness, package usage and one-file invalidation. The dependency-complete Pest/PHPForge suite remains for CI/integration validation.
+- `05d95cbb` — lazy project/package reference indexing over the shared source manifest/analyzer; import/generic PHP relationships; source-symbol attribution; relationship/kind-aware unique-declaration promotion to exact confidence; lexical/dynamic preservation; deterministic bounded usage lookup with relationship filters; incremental refresh; per-file diagnostics; focused coverage for false-positive exactness, package usage and one-file invalidation. The dependency-complete Pest/PHPForge suite remains for CI/integration validation.
+- `feat: add deterministic search and reads` — deterministic ranked symbol/path/text search across project/test/route/config/bootstrap/docs/Foundation/explicit-package/all scopes; pure path/text searches remain parser-free; explicit package targeting prevents broad vendor scans; secret/symlink/exclusion filtering; 2,500-file, 512 KiB/file, 16 MiB/target, 100-result and 240-byte-excerpt search bounds; canonical project/package line-range reads with 1 MiB/400-line limits, binary/secret denial, redaction, fingerprint/truncation metadata; focused tests for parser-free filesystem search, scope/package ranking, secret omission, bounded reads, redaction and traversal denial. Local PHP 8.4 syntax validation passed for the new search/read classes and focused tests; dependency-complete Pest/PHPForge execution remains for CI/integration validation.
 
-The overall `mcp/sdk STDIO integration`, `explicit MCP registration`, `doctor command`, `lazy in-memory cache/invalidation` and broad test-suite checklist entries remain intentionally open until their complete production contracts are exercised across the relevant service/index/protocol/integration layers.
+The overall `mcp/sdk STDIO integration`, `explicit MCP registration`, `doctor command`, `bounded output`, `lazy in-memory cache/invalidation` and broad test-suite checklist entries remain intentionally open until their complete production contracts are exercised across the relevant service/index/protocol/integration layers.
 
 ---
 

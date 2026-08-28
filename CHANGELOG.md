@@ -22,3 +22,5 @@ All notable changes to Foundation MCP will be documented in this file.
 - Incremental symbol-index refresh using source metadata states so unchanged files are not reparsed.
 - Lazy project/package reference indexing with source-symbol attribution, relationship-aware exact-confidence upgrades and bounded usage queries.
 - Incremental usage refresh and per-file reference diagnostics without reparsing unchanged source.
+- Deterministic bounded symbol/path/text search across project, Foundation, explicit package and structural scopes with parser-free filesystem-only search paths.
+- Safe redacted project/package resource reads with canonical path containment, binary/secret denial, line ranges and hard byte/line limits.
