@@ -100,5 +100,13 @@ jobs:
           extensions: fileinfo
           tools: composer:v2
       - run: composer install --no-interaction --prefer-dist
-      - run: composer ic:release:guard
+      - id: release_guard
+        continue-on-error: true
+        run: composer ic:release:guard
+      - name: PHPStan diagnostics
+        if: steps.release_guard.outcome == 'failure'
+        run: vendor/bin/phpstan analyse --configuration vendor/infocyph/phpforge/resources/phpstan.neon.dist --error-format=table --no-progress
+      - name: Enforce release guard
+        if: steps.release_guard.outcome == 'failure'
+        run: exit 1
       - run: composer ic:benchmark
