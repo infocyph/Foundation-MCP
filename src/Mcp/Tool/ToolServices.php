@@ -13,6 +13,7 @@ use Infocyph\FoundationMcp\Analysis\SymbolIndex;
 use Infocyph\FoundationMcp\Analysis\TestLocator;
 use Infocyph\FoundationMcp\Composer\ComposerInspector;
 use Infocyph\FoundationMcp\Composer\DependencyChangeAnalyzer;
+use Infocyph\FoundationMcp\Foundation\ArchitectureInspector;
 use Infocyph\FoundationMcp\Foundation\CommandInspector;
 use Infocyph\FoundationMcp\Foundation\ConfigInspector;
 use Infocyph\FoundationMcp\Foundation\FoundationWorkerInspector;
@@ -28,7 +29,7 @@ use Infocyph\FoundationMcp\Git\WorkspaceInspector;
 use Infocyph\FoundationMcp\Project\Project;
 use Infocyph\FoundationMcp\Resource\ResourceReader;
 
-/** Shared lazy domain services for the explicit MCP tool surface. */
+/** Shared lazy domain services for the explicit MCP tool/resource surface. */
 final class ToolServices
 {
     private ?ComposerInspector $composer = null;
@@ -47,6 +48,7 @@ final class ToolServices
     private ?WorkerInspector $workers = null;
     private ?ScheduleInspector $schedules = null;
     private ?RuntimeInspector $runtime = null;
+    private ?ArchitectureInspector $architecture = null;
     private ?GitRunner $git = null;
     private ?WorkspaceInspector $workspace = null;
     private ?DependencyChangeAnalyzer $dependencies = null;
@@ -175,6 +177,17 @@ final class ToolServices
     public function runtime(): RuntimeInspector
     {
         return $this->runtime ??= new RuntimeInspector($this->project, $this->composer());
+    }
+
+    public function architecture(): ArchitectureInspector
+    {
+        return $this->architecture ??= new ArchitectureInspector(
+            $this->project,
+            $this->composer(),
+            $this->modules(),
+            $this->providers(),
+            $this->runtime(),
+        );
     }
 
     public function git(): GitRunner
