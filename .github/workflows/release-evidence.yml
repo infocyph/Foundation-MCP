@@ -23,6 +23,7 @@ jobs:
         with:
           php-version: "8.4"
           coverage: none
+          extensions: fileinfo
           tools: composer:v2
       - run: composer install --no-interaction --prefer-dist
       - run: composer ic:ci --without-analysis
@@ -37,6 +38,7 @@ jobs:
         with:
           php-version: "8.5"
           coverage: none
+          extensions: fileinfo
           tools: composer:v2
       - run: composer install --no-interaction --prefer-dist
       - run: composer ic:ci --without-analysis
@@ -51,6 +53,7 @@ jobs:
         with:
           php-version: "8.4"
           coverage: none
+          extensions: fileinfo
           tools: composer:v2
       - run: composer install --no-interaction --prefer-dist
       - run: composer ic:ci --without-analysis
@@ -65,6 +68,7 @@ jobs:
         with:
           php-version: "8.5"
           coverage: none
+          extensions: fileinfo
           tools: composer:v2
       - run: composer install --no-interaction --prefer-dist
       - run: composer ic:ci --without-analysis
@@ -79,9 +83,10 @@ jobs:
         with:
           php-version: "8.5"
           coverage: none
+          extensions: fileinfo
           tools: composer:v2
       - run: composer install --no-interaction --prefer-dist
-      - run: vendor/bin/pest tests/Protocol
+      - run: composer ic:test:code
 
   release-guard:
     name: "PHPForge release gate and benchmarks"
@@ -92,6 +97,7 @@ jobs:
         with:
           php-version: "8.5"
           coverage: none
+          extensions: fileinfo
           tools: composer:v2
       - run: composer install --no-interaction --prefer-dist
       - run: composer ic:release:guard
