@@ -14,8 +14,10 @@
     "require": {
         "php": "^8.4",
         "composer-runtime-api": "^2.1",
-        "infocyph/phpforge": "dev-main@dev",
         "mcp/sdk": "^0.8.0"
+    },
+    "require-dev": {
+        "infocyph/phpforge": "dev-main@dev"
     },
     "autoload": {
         "psr-4": {
