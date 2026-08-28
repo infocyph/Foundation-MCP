@@ -25,3 +25,6 @@ All notable changes to Foundation MCP will be documented in this file.
 - Deterministic bounded symbol/path/text search across project, Foundation, explicit package and structural scopes with parser-free filesystem-only search paths.
 - Safe redacted project/package resource reads with canonical path containment, binary/secret denial, line ranges and hard byte/line limits.
 - Ranked related-test discovery for symbol/file targets using exact references, direct calls/construction, path/filename relationships and bounded lexical fallback across Composer test roots.
+- Static Foundation/Webrick route, console-command, provider and configuration inspectors with installed-package contract derivation and dynamic-state preservation.
+- Static Foundation schedule inspection with timing, identity, lock, timeout and memory policies derived from installed scheduling contracts.
+- Distinct Foundation maintenance-worker and Omnibus messaging-worker inspection, including bounded/redacted `routes/workers.php` analysis and installed `WorkerOptions` schema derivation for `config/messaging.php`.
