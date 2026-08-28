@@ -33,3 +33,4 @@ All notable changes to Foundation MCP will be documented in this file.
 - Composer dependency-change analysis against Git HEAD for direct constraints/scopes, locked versions/source references, transitive changes, affected Foundation modules and project references to changed package namespaces.
 - Bounded deterministic impact analysis for symbols, files, packages, modules, routes, config and current workspace changes with exact/resolved/lexical/dynamic evidence kept distinct.
 - Explicit read-only registration for all nine production `foundation_*` MCP tools over shared lazy domain services, with stable schemas, bounded outputs, closed-world annotations and focused cross-tool/SDK construction coverage.
+- Explicit project summary, architecture, Composer, ModuleCatalog and standards resources plus safe project/package file and symbol resource templates, all reusing the shared bounded analysis/read services.
