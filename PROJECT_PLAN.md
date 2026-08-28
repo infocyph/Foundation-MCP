@@ -1356,15 +1356,15 @@ The first release includes the entire intended scope; no desired capability is i
 [x] Git workspace inspector
 [x] dependency-change analyzer
 [x] impact analyzer
-[ ] foundation_project
-[ ] foundation_search
-[ ] foundation_read
-[ ] foundation_symbol
-[ ] foundation_usages
-[ ] foundation_inspect
-[ ] foundation_packages
-[ ] foundation_changes
-[ ] foundation_impact
+[x] foundation_project
+[x] foundation_search
+[x] foundation_read
+[x] foundation_symbol
+[x] foundation_usages
+[x] foundation_inspect
+[x] foundation_packages
+[x] foundation_changes
+[x] foundation_impact
 [ ] project summary resource
 [ ] architecture resource
 [ ] Composer resource
@@ -1413,6 +1413,7 @@ Update this checklist after each meaningful implementation chunk. Do not mark an
 - `0875871e`, `7816c2b5` — Foundation maintenance-worker inspection limited to `routes/workers.php`, supporting bounded static array/provider-callback declarations, conditional/dynamic status, Foundation-version evidence and recursive secret redaction without worker/application execution.
 - `1172426e`, `3666c446` — Omnibus messaging-worker inspection limited to `config/messaging.php`, worker/default-worker grouping, installed `WorkerOptions` promoted-field schema derivation through the explicitly authorized Omnibus package root, and an explicit two-category `WorkerInspector` result that prevents maintenance/messaging worker conflation.
 - `feat: add runtime and change impact intelligence` — installed-contract-derived runtime/bootstrap inspection with four explicit Foundation graphs, presets, semantic project-root handling and redacted inline options; fixed read-only argument-vector Git boundary with branch/HEAD/status and approved HEAD-file reads; current-vs-HEAD PHP declaration/reference deltas and structural change areas; Composer direct/lock/transitive/source-reference change analysis with ModuleCatalog and project-reference correlation; bounded evidence-based impact analysis for symbol/file/package/module/route/config/current changes; focused tests for runtime non-execution/dynamic state, staged/unstaged/untracked/rename parsing, Git path safety, dependency scope/version/reference/transitive/module/source-reference correlation, and all impact target families. PHP 8.4 syntax validation passed for every new/modified source and focused test file; dependency-complete Pest/PHPForge execution remains for CI/integration validation.
+- `3a9897f7` — explicit official-SDK registration of the complete nine-tool production surface (`foundation_project`, `foundation_search`, `foundation_read`, `foundation_symbol`, `foundation_usages`, `foundation_inspect`, `foundation_packages`, `foundation_changes`, `foundation_impact`) over one shared lazy `ToolServices` graph; stable input/output schemas and read-only/closed-world tool annotations; lightweight project summary separated from deep change analysis; explicit package targeting and absolute-path suppression; focused cross-tool fixture plus real SDK `ServerFactory` construction coverage. Local PHP 8.4 syntax validation passed for every new tool handler, the server factory and focused tool-surface test; dependency-complete Pest/MCP protocol execution remains for the later verification phase.
 
 The overall `mcp/sdk STDIO integration`, `explicit MCP registration`, `doctor command`, `bounded output`, `lazy in-memory cache/invalidation` and broad test-suite checklist entries remain intentionally open until their complete production contracts are exercised across the relevant service/index/protocol/integration layers.
 
