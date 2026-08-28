@@ -68,7 +68,7 @@ Infbyte should ultimately contain:
 }
 ```
 
-Keeping PHPForge explicitly in Infbyte is intentional even though Foundation MCP also requires it: Infbyte itself uses PHPForge as its QA/release toolchain, while Foundation MCP uses PHPForge as its mandatory source-analysis substrate.
+Keeping PHPForge explicitly in Infbyte is intentional: Infbyte itself uses PHPForge as its QA/release toolchain, while Foundation MCP uses PHPForge as its mandatory development-analysis substrate. Composer does not install a dependency package's `require-dev` transitively, so consumers that use Foundation MCP must require PHPForge explicitly under their own `require-dev`.
 
 Production installation remains clean:
 
@@ -83,14 +83,14 @@ Foundation MCP must add no service provider, route, module, config file, worker,
 Direct installation into another Foundation host is supported as a secondary path:
 
 ```bash
-composer require --dev infocyph/foundation-mcp
+composer require --dev infocyph/foundation-mcp:^1.0 infocyph/phpforge:dev-main@dev
 ```
 
 ---
 
 ## 3. Mandatory Package Dependencies
 
-Foundation MCP is itself development tooling, but the dependencies it needs **while the MCP server is running** belong in its Composer `require` section.
+Foundation MCP is itself development tooling. Its stable protocol/runtime libraries belong in Composer `require`, while PHPForge is an explicit development-time operational prerequisite kept in `require-dev`.
 
 The required package contract is:
 
@@ -99,7 +99,9 @@ The required package contract is:
     "require": {
         "php": "^8.4",
         "composer-runtime-api": "^2.1",
-        "mcp/sdk": "^0.8.0",
+        "mcp/sdk": "^0.8.0"
+    },
+    "require-dev": {
         "infocyph/phpforge": "dev-main@dev"
     }
 }
@@ -107,7 +109,7 @@ The required package contract is:
 
 `composer-runtime-api ^2.1` is a virtual Composer runtime contract, not a dependency on full `composer/composer`. It is required because Foundation MCP directly uses `Composer\InstalledVersions`, including `getInstallPath()` for the strictly root-matched runtime fallback path.
 
-`infocyph/phpforge` is **not** `require-dev` for Foundation MCP. It is a hard operational dependency of Foundation MCP.
+`infocyph/phpforge` is a **require-dev** dependency of Foundation MCP and a hard operational prerequisite whenever the MCP is used. Consuming projects must require it explicitly under their own `require-dev`; `doctor` and server startup fail when it is absent.
 
 Foundation MCP must not duplicate parser/static-analysis/refactoring/testing packages that PHPForge already provides through its toolchain. In particular, do not separately require packages merely because they are used internally by PHPForge's analysis stack, including PHP parser, Rector, PHPStan, Psalm, Symfony Process, Pest, PHPCS, Pint or benchmark tooling.
 
@@ -117,11 +119,11 @@ The hard rule is:
 
 `foundation-mcp doctor` and CI must verify that the PHPForge installation provides the parser/analysis capabilities Foundation MCP requires. A broken/incomplete PHPForge installation is an invalid Foundation MCP environment, not a reason to silently downgrade analysis quality.
 
-Foundation MCP itself should have no extra `require-dev` package unless a future test/build need cannot be supplied by PHPForge. For this release, the target is no additional dev dependency.
+Beyond PHPForge, Foundation MCP should have no extra `require-dev` package unless a future test/build need cannot be supplied by PHPForge.
 
 ---
 
-## 4. Why PHPForge Is a Runtime Dependency of the MCP
+## 4. Why PHPForge Is a Mandatory Development Prerequisite
 
 Foundation MCP requires PHPForge for the development intelligence it exposes, not merely for maintaining Foundation MCP's own repository.
 
@@ -136,7 +138,7 @@ Foundation MCP should use that environment for:
 - code-quality/standards context where appropriate;
 - release/CI validation of Foundation MCP itself.
 
-Foundation MCP must not shell out to PHPForge for every source query. Analysis remains in-process where practical for performance. PHPForge is the mandatory dependency substrate; Foundation MCP owns the MCP-oriented indexing/query semantics.
+Foundation MCP must not shell out to PHPForge for every source query. Analysis remains in-process where practical for performance. PHPForge is the mandatory development-analysis substrate; Foundation MCP owns the MCP-oriented indexing/query semantics.
 
 ---
 
@@ -157,7 +159,9 @@ Foundation MCP
 Infbyte
 ```
 
-Use `mcp/sdk ^0.8.0`, which supports the current MCP `2026-07-28` protocol revision and compatibility with the prior protocol era.
+Use `mcp/sdk ^0.8.0`.
+
+The SDK itself contains both the handshake-era MCP lifecycle through `2025-11-25` and the newer `2026-07-28` stateless lifecycle. Foundation MCP is intentionally **STDIO-only**, so its production protocol contract follows the latest SDK lifecycle actually served over STDIO: `2025-11-25` in `mcp/sdk v0.8.0`. The SDK's `2026-07-28` server lifecycle is implemented through `buildStateless()` and `StatelessHttpTransport`; Foundation MCP must not add an HTTP transport merely to claim that revision. Revisit this boundary only when the official SDK exposes the modern lifecycle over a transport compatible with Foundation MCP's local STDIO-only policy.
 
 Use the SDK for:
 
@@ -1210,7 +1214,7 @@ CI must validate against the actual current Infbyte/Foundation ecosystem: projec
 
 ### MCP protocol
 
-Use official `mcp/sdk` client integration tests against the real STDIO server for negotiation, tool/resource listing, tool calls, structured results, invalid inputs, error survival, output framing and supported protocol revisions.
+Use official `mcp/sdk` client integration tests against the real STDIO server for handshake negotiation, tool/resource listing, tool calls, structured results, invalid inputs, error survival and output framing. Protocol coverage follows revisions that the pinned official SDK actually serves over STDIO; with `mcp/sdk v0.8.0` that contract is `2025-11-25`. The `2026-07-28` stateless HTTP lifecycle is outside Foundation MCP's STDIO-only transport policy.
 
 ### Security
 
@@ -1262,7 +1266,7 @@ no unnecessary full-AST retention
 
 ## 33. PHPForge Release Gate
 
-Because PHPForge is both a **runtime dependency of Foundation MCP** and the repository QA/release toolchain, Foundation MCP's release must pass all applicable PHPForge gates available at release time, including formatting, lint/syntax, static analysis, architecture/dependency rules, complexity, security, tests, refactoring/duplicate checks, benchmarks and release constraints.
+Because PHPForge is both a **mandatory development-time operational prerequisite of Foundation MCP** and the repository QA/release toolchain, Foundation MCP's release must pass all applicable PHPForge gates available at release time, including formatting, lint/syntax, static analysis, architecture/dependency rules, complexity, security, tests, refactoring/duplicate checks, benchmarks and release constraints.
 
 Do not weaken PHPForge rules to accommodate avoidable Foundation MCP complexity.
 
@@ -1286,8 +1290,8 @@ README must document:
 
 - purpose and architecture;
 - Infbyte `require-dev` integration;
-- mandatory PHPForge dependency;
-- official `mcp/sdk` dependency;
+- mandatory PHPForge development prerequisite;
+- official `mcp/sdk` dependency and STDIO protocol boundary;
 - nine tools;
 - resources/templates;
 - exact-version and module semantics;
@@ -1331,10 +1335,10 @@ The first release includes the entire intended scope; no desired capability is i
 
 ```text
 [x] package skeleton/composer/binary
-[ ] mcp/sdk STDIO integration
-[x] PHPForge as mandatory `require` dependency
+[x] mcp/sdk STDIO integration
+[x] PHPForge as mandatory development prerequisite
 [x] PHPForge/parser compatibility doctor gate
-[ ] explicit MCP registration
+[x] explicit MCP registration
 [x] Infbyte/custom-Foundation project detection
 [x] secure root/package path model
 [x] Composer exact-version/package graph
@@ -1381,14 +1385,14 @@ The first release includes the entire intended scope; no desired capability is i
 [x] lazy in-memory cache/invalidation
 [x] doctor command
 [ ] unit/integration/ecosystem tests
-[ ] MCP protocol tests
-[ ] security tests
+[x] MCP protocol tests
+[x] security tests
 [ ] performance benchmarks
 [ ] Linux/Windows PHP 8.4/8.5 CI
 [ ] PHPForge full release gates
 [ ] README/security documentation
 [ ] Infbyte require-dev integration
-[ ] composer --no-dev zero-footprint validation
+[x] composer --no-dev zero-footprint validation
 ```
 
 Update this checklist after each meaningful implementation chunk. Do not mark an item complete without implementation/test evidence.
@@ -1416,8 +1420,11 @@ Update this checklist after each meaningful implementation chunk. Do not mark an
 - `3a9897f7` — explicit official-SDK registration of the complete nine-tool production surface (`foundation_project`, `foundation_search`, `foundation_read`, `foundation_symbol`, `foundation_usages`, `foundation_inspect`, `foundation_packages`, `foundation_changes`, `foundation_impact`) over one shared lazy `ToolServices` graph; stable input/output schemas and read-only/closed-world tool annotations; lightweight project summary separated from deep change analysis; explicit package targeting and absolute-path suppression; focused cross-tool fixture plus real SDK `ServerFactory` construction coverage. Local PHP 8.4 syntax validation passed for every new tool handler, the server factory and focused tool-surface test; dependency-complete Pest/MCP protocol execution remains for the later verification phase.
 - `94d3243e` — explicit project summary, architecture, Composer, ModuleCatalog and standards resources plus safe project/package file and exact symbol resource templates; `ArchitectureInspector` moves installed-state architecture composition into the domain layer shared by tools/resources; file templates reuse the bounded/redacting `ResourceReader`; standards aggregation is source-attributed and bounded; JSON resource payloads are capped at 512 KiB; focused resource-surface fixture plus real SDK `ServerFactory` construction coverage. Local PHP 8.4 syntax validation passed for the new resource/domain classes and focused resource fixture; dependency-complete Pest/MCP protocol execution remains for the later verification phase.
 - `2ea261b5` — runtime safety hardening: `--no-git` now propagates through server/doctor services; the only production subprocess boundary remains fixed read-only Git with argument vectors, `bypass_shell` and `--no-optional-locks`; all nine tool responses pass a 1 MiB serialization budget while resources retain their existing hard limits; shared lazy services invalidate and re-detect project/Composer state when `composer.json`, `composer.lock` or installed metadata changes; doctor now checks Git policy and explicit MCP surface construction; focused safety, output-budget, Composer-invalidation, doctor and Git-index immutability tests were added. Local PHP 8.4 syntax validation passed for every new/modified source and focused test file; dependency-complete Pest/PHPForge/MCP execution remains for the later verification phase.
+- `0d01b3d0` — replaces the generic variadic SDK tool wrapper with explicit reflection-compatible handler signatures for all nine tools, preserving the global output budget while matching `mcp/sdk v0.8.0` argument binding; removes the metadata-state `stat()` suppression warning. CI proves the real `2025-11-25` STDIO tool/resource path now executes successfully end-to-end, including required-input `foundation_search`.
+- `e2e18e2c` — aligns protocol coverage with the official SDK's actual transport lifecycle: the Foundation MCP STDIO contract tests `2025-11-25`; the SDK's `2026-07-28` server lifecycle is stateless HTTP and remains outside this package's deliberate STDIO-only/non-network boundary. Removes the one-shot branch self-push workflow after branch protection proved it could not be a valid plan-update mechanism.
+- CI on the corrected branch proves the existing integration/ecosystem/security fixtures pass on PHP 8.4 prefer-stable and proves `composer install --no-dev` succeeds without the development-only MCP/PHPForge stack. The broad unit/integration/ecosystem checklist remains open until the complete matrix and remaining fixture classes are verified.
 
-The overall `mcp/sdk STDIO integration`, `explicit MCP registration` and broad test-suite/release-gate checklist entries remain intentionally open until their complete production contracts are exercised across protocol/integration/ecosystem/CI layers.
+The remaining release tranche is PHPForge standards cleanup, complete unit/integration/ecosystem matrix verification, performance benchmarks, Linux/Windows PHP 8.4/8.5 coverage, README/security documentation, Infbyte require-dev rollout and the full PHPForge release gate.
 
 ---
 
@@ -1426,7 +1433,7 @@ The overall `mcp/sdk STDIO integration`, `explicit MCP registration` and broad t
 All steps target the same production release:
 
 1. package Composer/binary + official SDK STDIO server;
-2. PHPForge runtime integration and doctor checks;
+2. PHPForge development-analysis integration and doctor checks;
 3. project/root/security model;
 4. Composer/package/Foundation detection;
 5. ModuleCatalog + Foundation architecture semantics;
@@ -1449,10 +1456,10 @@ All steps target the same production release:
 Foundation MCP is production-release ready only when:
 
 1. Infbyte can require `infocyph/foundation-mcp` only under `require-dev`.
-2. Foundation MCP directly requires `composer-runtime-api ^2.1`, `infocyph/phpforge: dev-main@dev` and `mcp/sdk ^0.8.0`.
+2. Foundation MCP directly requires `composer-runtime-api ^2.1` and `mcp/sdk ^0.8.0`, keeps `infocyph/phpforge: dev-main@dev` in `require-dev`, and refuses MCP startup when PHPForge/parser capability is unavailable.
 3. It does not duplicate PHPForge's parser/static-analysis toolchain in its Composer requirements.
 4. `doctor` proves the required PHPForge/parser analysis capability is installed and compatible.
-5. `vendor/bin/foundation-mcp` exposes the complete STDIO MCP surface.
+5. `vendor/bin/foundation-mcp` exposes the complete STDIO MCP surface over the latest lifecycle supported by the pinned SDK's STDIO server.
 6. It works for canonical Infbyte and custom Foundation hosts.
 7. It reports exact locked/installed Foundation/package versions.
 8. It reads the installed Foundation ModuleCatalog statically and preserves purpose-first semantics.
