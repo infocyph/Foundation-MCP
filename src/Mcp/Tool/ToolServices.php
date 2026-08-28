@@ -289,7 +289,11 @@ final class ToolServices
             return 'missing';
         }
 
-        return $path.':'.$stat['size'].':'.$stat['mtime'].':'.$stat['ctime'];
+        $size = is_int($stat['size'] ?? null) ? $stat['size'] : 0;
+        $mtime = is_int($stat['mtime'] ?? null) ? $stat['mtime'] : 0;
+        $ctime = is_int($stat['ctime'] ?? null) ? $stat['ctime'] : 0;
+
+        return $path.':'.$size.':'.$mtime.':'.$ctime;
     }
 
     private function resetServices(): void
