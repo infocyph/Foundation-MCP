@@ -1,0 +1,17 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use Infocyph\FoundationMcp\Application;
+
+$autoload = $_composer_autoload_path ?? dirname(__DIR__) . '/vendor/autoload.php';
+
+if (!is_file($autoload)) {
+    fwrite(STDERR, "Foundation MCP dependencies are not installed. Run Composer install first.\n");
+    exit(1);
+}
+
+require $autoload;
+
+exit(Application::run($argv));

@@ -1,0 +1,42 @@
+{
+    "name": "infocyph/foundation-mcp",
+    "description": "Read-only MCP development intelligence for Infbyte and Infocyph Foundation applications.",
+    "license": "MIT",
+    "type": "library",
+    "keywords": [
+        "infocyph",
+        "infbyte",
+        "foundation",
+        "mcp",
+        "model-context-protocol",
+        "development-tools"
+    ],
+    "require": {
+        "php": "^8.4",
+        "infocyph/phpforge": "dev-main@dev",
+        "mcp/sdk": "^0.8.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Infocyph\\FoundationMcp\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Infocyph\\FoundationMcp\\Tests\\": "tests/"
+        }
+    },
+    "bin": [
+        "bin/foundation-mcp"
+    ],
+    "config": {
+        "allow-plugins": {
+            "ergebnis/composer-normalize": true,
+            "infocyph/phpforge": true,
+            "pestphp/pest-plugin": true
+        },
+        "optimize-autoloader": true,
+        "sort-packages": true
+    },
+    "prefer-stable": true
+}
