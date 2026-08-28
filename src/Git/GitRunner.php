@@ -82,6 +82,7 @@ final readonly class GitRunner
         ];
 
         set_error_handler(static fn(int $severity): bool => $severity === E_WARNING);
+
         try {
             $process = proc_open($command, $descriptors, $pipes, $this->project->root, null, ['bypass_shell' => true]);
         } finally {
