@@ -596,7 +596,13 @@ Use the installed Foundation `ModuleCatalog`, not a copied Foundation-MCP regist
 
 Build lazy in-memory indexes over project source and requested dependency source.
 
-The symbol index records declarations, signatures, ownership, relationships and line ranges.
+The symbol index records declarations, signatures, ownership, relationships and line ranges. It is not built during project detection or lightweight project-summary work. Project indexing begins only when symbol-oriented intelligence is requested; dependency symbol indexing begins only for the explicitly requested package.
+
+Source discovery is Composer/host-root aware. Project indexing covers discovered application/test roots plus approved structural roots, skips excluded directories, secret-bearing paths and nested symlinks, and never scans `vendor/`. Package indexing derives roots from that installed package's Composer autoload metadata instead of walking the entire package/dependency tree.
+
+The symbol index keeps compact per-file entries. A path/size/mtime/ctime metadata state is used to identify unchanged files; only added/changed files are re-analyzed, removed files are evicted, and `PhpAnalyzer` still verifies changed contents through its stronger content fingerprint. Duplicate declarations are preserved as multiple candidates rather than guessed away. Exact symbol spelling is preferred and case-folded matching is a fallback that may return ambiguity.
+
+Per-file parser/analysis failures become bounded index diagnostics without preventing symbols from unrelated valid files from being returned.
 
 The reference index records relationships such as:
 
@@ -1071,6 +1077,7 @@ Foundation-MCP/
 │   ├── Analysis/
 │   │   ├── AnalyzedFile.php
 │   │   ├── PhpAnalyzer.php
+│   │   ├── SourceFileFinder.php
 │   │   ├── Internal/
 │   │   │   ├── PhpDeclarationVisitor.php
 │   │   │   ├── PhpReferenceVisitor.php
@@ -1134,7 +1141,7 @@ Foundation-MCP/
 └── PROJECT_PLAN.md
 ```
 
-Avoid interfaces/classes created only for symmetry. Introduce abstractions only at real replaceable/testing boundaries. `ComposerMetadataReader` is an intentional boundary between bounded raw Composer artifact acquisition and semantic package/graph correlation; it keeps file/runtime metadata mechanics out of `ComposerInspector`.
+Avoid interfaces/classes created only for symmetry. Introduce abstractions only at real replaceable/testing boundaries. `ComposerMetadataReader` is an intentional boundary between bounded raw Composer artifact acquisition and semantic package/graph correlation; it keeps file/runtime metadata mechanics out of `ComposerInspector`. `SourceFileFinder` is the shared source-manifest boundary used by lazy symbol/reference/search intelligence; it centralizes exclusion, secret, symlink and Composer-autoload discovery instead of duplicating recursive scans across indexes.
 
 ---
 
@@ -1302,7 +1309,7 @@ The first release includes the entire intended scope; no desired capability is i
 [x] installed Foundation ModuleCatalog parser
 [x] purpose-first module intelligence
 [x] PHPForge-backed AST/source analyzer
-[ ] lazy symbol index
+[x] lazy symbol index
 [ ] lazy reference/usage index
 [ ] deterministic search/read
 [ ] related-test discovery
@@ -1361,7 +1368,8 @@ Update this checklist after each meaningful implementation chunk. Do not mark an
 - `feat: add project detection and filesystem security model` — strict CLI root handling; immutable project context; renamed-canonical Infbyte/custom/unsupported classification; Composer-autoload source roots; project/package path containment; traversal/absolute/symlink-escape rejection; hard secret-file policy; output redaction; PHPForge parser parse-probe; unit coverage; PHP 8.4 syntax validation and local smoke validation.
 - `feat: add Composer and Foundation package intelligence` — distinct declared/locked/installed package truth; runtime/dev direct dependencies; bounded transitive graph; source-reference and install-path state; `installed.json` normal path with root-proven `InstalledVersions` fallback; no `installed.php` execution; installed package composer metadata fallback; platform requirements; canonical package ownership/roots; Foundation exact-version diagnostics; lock/install mismatch diagnostics; focused unit coverage; PHP 8.4 syntax and standalone smoke validation.
 - `9b0844b5` — bounded static parsing of installed Foundation `ModuleCatalog::MODULES` through the PHPForge-provided PHP parser; literal-only evaluation with dynamic-expression rejection; module/alias/package resolution with ambiguity checks; Composer package/config correlation; built-in/package/config/runtime-activation-safe statuses; ModuleCatalog doctor gate; focused unit coverage added; PHP 8.4 syntax validation passed locally. The dependency-complete Pest/PHPForge suite remains for CI/integration validation.
-- `feat: add PHP source analysis core` — PHPForge-supplied in-process PHP parser backend; compact declarations/signatures/imports/inheritance/traits/attributes/PHPDoc extraction; promoted properties/constants/enum cases; resolved/lexical/dynamic reference extraction; bounded literal arrays; explicit-project and explicit-package path authorization; secret/file/size controls; file-local parse errors; content-fingerprint cache invalidation; focused unit coverage. Local PHP 8.4 syntax validation passed for the analyzer result/entry point and literal visitor; the dependency-complete Pest/PHPForge suite remains for CI/integration validation.
+- `617c5e9d` — PHPForge-supplied in-process PHP parser backend; compact declarations/signatures/imports/inheritance/traits/attributes/PHPDoc extraction; promoted properties/constants/enum cases; resolved/lexical/dynamic reference extraction; bounded literal arrays; explicit-project and explicit-package path authorization; secret/file/size controls; file-local parse errors; content-fingerprint cache invalidation; focused unit coverage. Local PHP 8.4 syntax validation passed for the analyzer result/entry point and literal visitor; the dependency-complete Pest/PHPForge suite remains for CI/integration validation.
+- `feat: add lazy symbol index` — Composer/host-aware PHP source discovery; project-only lazy build; explicitly requested package-only lazy build; excluded/secret/symlink path filtering; compact symbol ownership/source metadata; deterministic exact/case-folded lookup with duplicate ambiguity preserved; incremental added/changed/removed file refresh; per-file parse/analysis diagnostics; focused unit coverage including no-op refresh and single-file invalidation. Local PHP 8.4 syntax probes passed for the new source-finder/index constructs; the dependency-complete Pest/PHPForge suite remains for CI/integration validation.
 
 The overall `mcp/sdk STDIO integration`, `explicit MCP registration`, `doctor command`, `lazy in-memory cache/invalidation` and broad test-suite checklist entries remain intentionally open until their complete production contracts are exercised across the relevant service/index/protocol/integration layers.
 

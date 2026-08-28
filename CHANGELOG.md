@@ -18,3 +18,5 @@ All notable changes to Foundation MCP will be documented in this file.
 - `doctor` validation for installed Foundation `ModuleCatalog` readability.
 - PHPForge-backed in-process PHP source analyzer for declarations, signatures, relationships, references and bounded literal-array intelligence without executing host source.
 - File-local parse-error isolation and content-fingerprint analysis caching for unchanged PHP source.
+- Lazy project/package symbol indexing with deterministic lookup, duplicate-symbol surfacing and per-file diagnostics.
+- Incremental symbol-index refresh using source metadata states so unchanged files are not reparsed.
