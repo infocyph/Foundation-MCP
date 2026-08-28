@@ -32,3 +32,4 @@ All notable changes to Foundation MCP will be documented in this file.
 - Read-only Git workspace inspection through a fixed argument-vector command surface, including HEAD/branch/detached state, staged/unstaged/untracked/rename status, PHP declaration/reference deltas, structural areas and initial related-test impact.
 - Composer dependency-change analysis against Git HEAD for direct constraints/scopes, locked versions/source references, transitive changes, affected Foundation modules and project references to changed package namespaces.
 - Bounded deterministic impact analysis for symbols, files, packages, modules, routes, config and current workspace changes with exact/resolved/lexical/dynamic evidence kept distinct.
+- Explicit read-only registration for all nine production `foundation_*` MCP tools over shared lazy domain services, with stable schemas, bounded outputs, closed-world annotations and focused cross-tool/SDK construction coverage.
