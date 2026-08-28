@@ -33,8 +33,7 @@ final readonly class ServerFactory
     public function __construct(
         private Project $project,
         private bool $gitEnabled = true,
-    ) {
-    }
+    ) {}
 
     public function create(): Server
     {
@@ -60,11 +59,15 @@ final readonly class ServerFactory
             new SymbolTool($services), new UsagesTool($services), new InspectTool($services),
             new PackagesTool($services), new ChangesTool($services), new ImpactTool($services),
         ] as $tool) {
-            $handler = static fn (...$arguments): array => $budget->tool($tool->execute(...$arguments));
+            $handler = static fn(...$arguments): array => $budget->tool($tool->execute(...$arguments));
 
             $builder->addTool(
-                handler: $handler, name: $tool::NAME, description: $tool::DESCRIPTION,
-                annotations: $annotations, inputSchema: $tool::INPUT_SCHEMA, outputSchema: ['type' => 'object'],
+                handler: $handler,
+                name: $tool::NAME,
+                description: $tool::DESCRIPTION,
+                annotations: $annotations,
+                inputSchema: $tool::INPUT_SCHEMA,
+                outputSchema: ['type' => 'object'],
             );
         }
 

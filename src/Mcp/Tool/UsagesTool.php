@@ -6,8 +6,8 @@ namespace Infocyph\FoundationMcp\Mcp\Tool;
 
 final readonly class UsagesTool
 {
-    public const string NAME = 'foundation_usages';
     public const string DESCRIPTION = 'Return deterministic bounded references to a PHP symbol with source symbol, relationship, source location, and exact/resolved/lexical/dynamic confidence.';
+
     public const array INPUT_SCHEMA = [
         'type' => 'object',
         'properties' => [
@@ -28,10 +28,11 @@ final readonly class UsagesTool
         'additionalProperties' => false,
     ];
 
+    public const string NAME = 'foundation_usages';
+
     public function __construct(
         private ToolServices $services,
-    ) {
-    }
+    ) {}
 
     /** @param list<string>|null $relationships @return array<string,mixed> */
     public function execute(

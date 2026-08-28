@@ -6,8 +6,8 @@ namespace Infocyph\FoundationMcp\Mcp\Tool;
 
 final readonly class SearchTool
 {
-    public const string NAME = 'foundation_search';
     public const string DESCRIPTION = 'Search project, tests, installed Foundation, one explicit package, routes, config, bootstrap, or docs by symbol, path, or bounded text with deterministic ranking.';
+
     public const array INPUT_SCHEMA = [
         'type' => 'object',
         'properties' => [
@@ -29,10 +29,11 @@ final readonly class SearchTool
         'additionalProperties' => false,
     ];
 
+    public const string NAME = 'foundation_search';
+
     public function __construct(
         private ToolServices $services,
-    ) {
-    }
+    ) {}
 
     /** @return array<string,mixed> */
     public function execute(

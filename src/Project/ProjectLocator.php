@@ -10,8 +10,7 @@ final readonly class ProjectLocator
 {
     public function __construct(
         private ProjectDetector $detector = new ProjectDetector(),
-    ) {
-    }
+    ) {}
 
     public function locate(?string $explicitRoot = null, ?string $cwd = null): string
     {
@@ -23,7 +22,7 @@ final readonly class ProjectLocator
         $fallback = null;
 
         while (true) {
-            if (is_file($current.DIRECTORY_SEPARATOR.'composer.json')) {
+            if (is_file($current . DIRECTORY_SEPARATOR . 'composer.json')) {
                 $fallback ??= $current;
 
                 if ($this->detector->detect($current)->supported()) {
@@ -47,17 +46,6 @@ final readonly class ProjectLocator
         throw new RuntimeException('Unable to locate a Composer project root.');
     }
 
-    private function explicitRoot(string $root): string
-    {
-        $resolved = $this->directory($root);
-
-        if (!is_file($resolved.DIRECTORY_SEPARATOR.'composer.json')) {
-            throw new RuntimeException('The supplied --root does not contain composer.json.');
-        }
-
-        return $resolved;
-    }
-
     private function directory(string|false $path): string
     {
         if (!is_string($path) || $path === '' || str_contains($path, "\0")) {
@@ -71,5 +59,16 @@ final readonly class ProjectLocator
         }
 
         return rtrim($resolved, DIRECTORY_SEPARATOR);
+    }
+
+    private function explicitRoot(string $root): string
+    {
+        $resolved = $this->directory($root);
+
+        if (!is_file($resolved . DIRECTORY_SEPARATOR . 'composer.json')) {
+            throw new RuntimeException('The supplied --root does not contain composer.json.');
+        }
+
+        return $resolved;
     }
 }

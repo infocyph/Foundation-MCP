@@ -15,14 +15,23 @@ use RuntimeException;
 final class PhpLiteralVisitor extends NodeVisitorAbstract
 {
     private const int MAX_ARRAYS = 128;
+
     private const int MAX_DEPTH = 8;
+
     private const int MAX_ITEMS = 256;
+
     private const int MAX_STRING_BYTES = 8_192;
 
     private int $arrayDepth = 0;
 
     /** @var list<array{line:int,value:array<array-key,mixed>}> */
     private array $arrays = [];
+
+    /** @return list<array{line:int,value:array<array-key,mixed>}> */
+    public function arrays(): array
+    {
+        return $this->arrays;
+    }
 
     public function enterNode(Node $node)
     {
@@ -55,10 +64,42 @@ final class PhpLiteralVisitor extends NodeVisitorAbstract
         return null;
     }
 
-    /** @return list<array{line:int,value:array<array-key,mixed>}> */
-    public function arrays(): array
+    private function className(Expr\ClassConstFetch $expression): string
     {
-        return $this->arrays;
+        if (!$expression->class instanceof Name || !$expression->name instanceof Node\Identifier) {
+            throw new RuntimeException('Dynamic class constant is not a literal value.');
+        }
+
+        if (strtolower($expression->name->toString()) !== 'class') {
+            throw new RuntimeException('Only ::class is a literal class constant.');
+        }
+
+        $resolved = $expression->class->getAttribute('resolvedName');
+        $name = $resolved instanceof Name ? $resolved : $expression->class;
+
+        return $this->string($name->toString());
+    }
+
+    private function concat(Expr\BinaryOp\Concat $expression, int $depth): string
+    {
+        $left = $this->literal($expression->left, $depth);
+        $right = $this->literal($expression->right, $depth);
+
+        if (!is_string($left) || !is_string($right)) {
+            throw new RuntimeException('Literal concatenation must use strings.');
+        }
+
+        return $this->string($left . $right);
+    }
+
+    private function constant(Expr\ConstFetch $constant): ?bool
+    {
+        return match (strtolower($constant->name->toString())) {
+            'true' => true,
+            'false' => false,
+            'null' => null,
+            default => throw new RuntimeException('Constant is not a literal value.'),
+        };
     }
 
     private function literal(Expr $expression, int $depth): mixed
@@ -115,16 +156,6 @@ final class PhpLiteralVisitor extends NodeVisitorAbstract
         return $result;
     }
 
-    private function constant(Expr\ConstFetch $constant): bool|null
-    {
-        return match (strtolower($constant->name->toString())) {
-            'true' => true,
-            'false' => false,
-            'null' => null,
-            default => throw new RuntimeException('Constant is not a literal value.'),
-        };
-    }
-
     private function number(Expr $expression, int $depth): int|float
     {
         $value = $this->literal($expression, $depth);
@@ -134,34 +165,6 @@ final class PhpLiteralVisitor extends NodeVisitorAbstract
         }
 
         return $value;
-    }
-
-    private function concat(Expr\BinaryOp\Concat $expression, int $depth): string
-    {
-        $left = $this->literal($expression->left, $depth);
-        $right = $this->literal($expression->right, $depth);
-
-        if (!is_string($left) || !is_string($right)) {
-            throw new RuntimeException('Literal concatenation must use strings.');
-        }
-
-        return $this->string($left.$right);
-    }
-
-    private function className(Expr\ClassConstFetch $expression): string
-    {
-        if (!$expression->class instanceof Name || !$expression->name instanceof Node\Identifier) {
-            throw new RuntimeException('Dynamic class constant is not a literal value.');
-        }
-
-        if (strtolower($expression->name->toString()) !== 'class') {
-            throw new RuntimeException('Only ::class is a literal class constant.');
-        }
-
-        $resolved = $expression->class->getAttribute('resolvedName');
-        $name = $resolved instanceof Name ? $resolved : $expression->class;
-
-        return $this->string($name->toString());
     }
 
     private function string(string $value): string

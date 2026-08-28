@@ -6,8 +6,8 @@ namespace Infocyph\FoundationMcp\Mcp\Tool;
 
 final readonly class ImpactTool
 {
-    public const string NAME = 'foundation_impact';
     public const string DESCRIPTION = 'Return a deterministic bounded impact graph for a symbol, file, package, Foundation module, route, config key/path, or the current workspace changes with explicit evidence confidence.';
+
     public const array INPUT_SCHEMA = [
         'type' => 'object',
         'properties' => [
@@ -22,10 +22,11 @@ final readonly class ImpactTool
         'additionalProperties' => false,
     ];
 
+    public const string NAME = 'foundation_impact';
+
     public function __construct(
         private ToolServices $services,
-    ) {
-    }
+    ) {}
 
     /** @return array<string,mixed> */
     public function execute(string $kind, ?string $target = null, int $limit = 100): array

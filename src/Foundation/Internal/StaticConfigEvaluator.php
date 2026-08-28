@@ -20,20 +20,6 @@ final class StaticConfigEvaluator
     /** @var array<string, EvalResult> */
     private array $variables = [];
 
-    /** @param list<Node\Stmt> $statements */
-    public function learn(array $statements): void
-    {
-        foreach ($statements as $statement) {
-            if (!$statement instanceof Node\Stmt\Expression || !$statement->expr instanceof Expr\Assign) {
-                continue;
-            }
-            $assign = $statement->expr;
-            if ($assign->var instanceof Expr\Variable && is_string($assign->var->name)) {
-                $this->variables[$assign->var->name] = $this->evaluate($assign->expr);
-            }
-        }
-    }
-
     /** @return EvalResult */
     public function evaluate(Expr $expr): array
     {
@@ -56,15 +42,51 @@ final class StaticConfigEvaluator
         };
     }
 
-    /** @return EvalResult */
-    private function constant(Expr\ConstFetch $expr): array
+    /** @param list<Node\Stmt> $statements */
+    public function learn(array $statements): void
     {
-        return match (strtolower($expr->name->toString())) {
-            'true' => $this->literal(true),
-            'false' => $this->literal(false),
-            'null' => $this->literal(null),
-            default => $this->dynamic(),
+        foreach ($statements as $statement) {
+            if (!$statement instanceof Node\Stmt\Expression || !$statement->expr instanceof Expr\Assign) {
+                continue;
+            }
+            $assign = $statement->expr;
+            if ($assign->var instanceof Expr\Variable && is_string($assign->var->name)) {
+                $this->variables[$assign->var->name] = $this->evaluate($assign->expr);
+            }
+        }
+    }
+
+    /** @return EvalResult */
+    private function binary(Expr\BinaryOp $expr): array
+    {
+        $left = $this->evaluate($expr->left);
+        $right = $this->evaluate($expr->right);
+        if ($left['status'] !== 'literal' || $right['status'] !== 'literal') {
+            return $this->combineDynamic($left, $right);
+        }
+
+        $value = match (true) {
+            $expr instanceof Expr\BinaryOp\Identical => $left['value'] === $right['value'],
+            $expr instanceof Expr\BinaryOp\NotIdentical => $left['value'] !== $right['value'],
+            $expr instanceof Expr\BinaryOp\Equal => $left['value'] == $right['value'],
+            $expr instanceof Expr\BinaryOp\NotEqual => $left['value'] != $right['value'],
+            $expr instanceof Expr\BinaryOp\BooleanAnd => (bool) $left['value'] && (bool) $right['value'],
+            $expr instanceof Expr\BinaryOp\BooleanOr => (bool) $left['value'] || (bool) $right['value'],
+            default => null,
         };
+
+        return $value === null ? $this->combineDynamic($left, $right) : $this->literal($value);
+    }
+
+    /** @return EvalResult */
+    private function booleanNot(Expr\BooleanNot $expr): array
+    {
+        $value = $this->evaluate($expr->expr);
+        if ($value['status'] === 'literal') {
+            return $this->literal(!$value['value']);
+        }
+
+        return $this->merge('dynamic', null, $value['environment'], $value['classes']);
     }
 
     /** @return EvalResult */
@@ -81,10 +103,75 @@ final class StaticConfigEvaluator
         return ['status' => 'dynamic', 'value' => null, 'environment' => [], 'classes' => [$class]];
     }
 
-    /** @return EvalResult */
-    private function variable(Expr\Variable $expr): array
+    /** @param EvalResult $left @param EvalResult $right @return EvalResult */
+    private function combineDynamic(array $left, array $right): array
     {
-        return is_string($expr->name) ? ($this->variables[$expr->name] ?? $this->dynamic()) : $this->dynamic();
+        return $this->merge(
+            'dynamic',
+            null,
+            [...$left['environment'], ...$right['environment']],
+            [...$left['classes'], ...$right['classes']],
+        );
+    }
+
+    /** @return EvalResult */
+    private function concat(Expr\BinaryOp\Concat $expr): array
+    {
+        $left = $this->evaluate($expr->left);
+        $right = $this->evaluate($expr->right);
+        if ($left['status'] === 'literal' && $right['status'] === 'literal'
+            && is_string($left['value']) && is_string($right['value'])) {
+            return $this->literal($this->string($left['value'] . $right['value']));
+        }
+
+        return $this->combineDynamic($left, $right);
+    }
+
+    /** @return EvalResult */
+    private function constant(Expr\ConstFetch $expr): array
+    {
+        return match (strtolower($expr->name->toString())) {
+            'true' => $this->literal(true),
+            'false' => $this->literal(false),
+            'null' => $this->literal(null),
+            default => $this->dynamic(),
+        };
+    }
+
+    /** @return EvalResult */
+    private function dynamic(): array
+    {
+        return ['status' => 'dynamic', 'value' => null, 'environment' => [], 'classes' => []];
+    }
+
+    /** @param list<Node\Arg> $args @return EvalResult */
+    private function dynamicFromArgs(array $args): array
+    {
+        $environment = [];
+        $classes = [];
+        foreach ($args as $arg) {
+            $value = $this->evaluate($arg->value);
+            array_push($environment, ...$value['environment']);
+            array_push($classes, ...$value['classes']);
+        }
+
+        return $this->merge('dynamic', null, $environment, $classes);
+    }
+
+    /** @return EvalResult */
+    private function dynamicWithClasses(Expr $expr): array
+    {
+        $classes = [];
+        foreach ($expr->getSubNodeNames() as $name) {
+            $value = $expr->{$name};
+            if ($value instanceof Name) {
+                $classes[] = $this->resolvedName($value);
+            } elseif ($value instanceof Expr\ClassConstFetch && $value->class instanceof Name) {
+                $classes[] = $this->resolvedName($value->class);
+            }
+        }
+
+        return $this->merge('dynamic', null, [], $classes);
     }
 
     /** @return EvalResult */
@@ -115,18 +202,27 @@ final class StaticConfigEvaluator
         return $this->merge('environment', null, $environment, $default['classes']);
     }
 
-    /** @param list<Node\Arg> $args @return EvalResult */
-    private function dynamicFromArgs(array $args): array
+    /** @return EvalResult */
+    private function literal(mixed $value): array
     {
-        $environment = [];
-        $classes = [];
-        foreach ($args as $arg) {
-            $value = $this->evaluate($arg->value);
-            array_push($environment, ...$value['environment']);
-            array_push($classes, ...$value['classes']);
+        return ['status' => 'literal', 'value' => $value, 'environment' => [], 'classes' => []];
+    }
+
+    /** @param list<EnvironmentRef> $environment @param list<string> $classes @return EvalResult */
+    private function merge(string $status, mixed $value, array $environment, array $classes): array
+    {
+        $env = [];
+        foreach ($environment as $item) {
+            $env[strtolower($item['name']) . '|' . $item['helper']] = $item;
+        }
+        $classMap = [];
+        foreach ($classes as $class) {
+            if ($class !== '') {
+                $classMap[$class] = true;
+            }
         }
 
-        return $this->merge('dynamic', null, $environment, $classes);
+        return ['status' => $status, 'value' => $value, 'environment' => array_values($env), 'classes' => array_keys($classMap)];
     }
 
     /** @return EvalResult */
@@ -140,50 +236,16 @@ final class StaticConfigEvaluator
         return $this->merge('dynamic', null, $value['environment'], $value['classes']);
     }
 
-    /** @return EvalResult */
-    private function booleanNot(Expr\BooleanNot $expr): array
+    private function resolvedName(Name $name): string
     {
-        $value = $this->evaluate($expr->expr);
-        if ($value['status'] === 'literal') {
-            return $this->literal(!$value['value']);
-        }
+        $resolved = $name->getAttribute('resolvedName');
 
-        return $this->merge('dynamic', null, $value['environment'], $value['classes']);
+        return ltrim(($resolved instanceof Name ? $resolved : $name)->toString(), '\\');
     }
 
-    /** @return EvalResult */
-    private function concat(Expr\BinaryOp\Concat $expr): array
+    private function string(string $value): string
     {
-        $left = $this->evaluate($expr->left);
-        $right = $this->evaluate($expr->right);
-        if ($left['status'] === 'literal' && $right['status'] === 'literal'
-            && is_string($left['value']) && is_string($right['value'])) {
-            return $this->literal($this->string($left['value'].$right['value']));
-        }
-
-        return $this->combineDynamic($left, $right);
-    }
-
-    /** @return EvalResult */
-    private function binary(Expr\BinaryOp $expr): array
-    {
-        $left = $this->evaluate($expr->left);
-        $right = $this->evaluate($expr->right);
-        if ($left['status'] !== 'literal' || $right['status'] !== 'literal') {
-            return $this->combineDynamic($left, $right);
-        }
-
-        $value = match (true) {
-            $expr instanceof Expr\BinaryOp\Identical => $left['value'] === $right['value'],
-            $expr instanceof Expr\BinaryOp\NotIdentical => $left['value'] !== $right['value'],
-            $expr instanceof Expr\BinaryOp\Equal => $left['value'] == $right['value'],
-            $expr instanceof Expr\BinaryOp\NotEqual => $left['value'] != $right['value'],
-            $expr instanceof Expr\BinaryOp\BooleanAnd => (bool) $left['value'] && (bool) $right['value'],
-            $expr instanceof Expr\BinaryOp\BooleanOr => (bool) $left['value'] || (bool) $right['value'],
-            default => null,
-        };
-
-        return $value === null ? $this->combineDynamic($left, $right) : $this->literal($value);
+        return strlen($value) <= self::MAX_STRING_BYTES ? $value : substr($value, 0, self::MAX_STRING_BYTES);
     }
 
     /** @return EvalResult */
@@ -205,69 +267,8 @@ final class StaticConfigEvaluator
     }
 
     /** @return EvalResult */
-    private function dynamicWithClasses(Expr $expr): array
+    private function variable(Expr\Variable $expr): array
     {
-        $classes = [];
-        foreach ($expr->getSubNodeNames() as $name) {
-            $value = $expr->{$name};
-            if ($value instanceof Name) {
-                $classes[] = $this->resolvedName($value);
-            } elseif ($value instanceof Expr\ClassConstFetch && $value->class instanceof Name) {
-                $classes[] = $this->resolvedName($value->class);
-            }
-        }
-
-        return $this->merge('dynamic', null, [], $classes);
-    }
-
-    /** @param EvalResult $left @param EvalResult $right @return EvalResult */
-    private function combineDynamic(array $left, array $right): array
-    {
-        return $this->merge(
-            'dynamic',
-            null,
-            [...$left['environment'], ...$right['environment']],
-            [...$left['classes'], ...$right['classes']],
-        );
-    }
-
-    /** @return EvalResult */
-    private function literal(mixed $value): array
-    {
-        return ['status' => 'literal', 'value' => $value, 'environment' => [], 'classes' => []];
-    }
-
-    /** @return EvalResult */
-    private function dynamic(): array
-    {
-        return ['status' => 'dynamic', 'value' => null, 'environment' => [], 'classes' => []];
-    }
-
-    /** @param list<EnvironmentRef> $environment @param list<string> $classes @return EvalResult */
-    private function merge(string $status, mixed $value, array $environment, array $classes): array
-    {
-        $env = [];
-        foreach ($environment as $item) {
-            $env[strtolower($item['name']).'|'.$item['helper']] = $item;
-        }
-        $classMap = [];
-        foreach ($classes as $class) {
-            if ($class !== '') {
-                $classMap[$class] = true;
-            }
-        }
-
-        return ['status' => $status, 'value' => $value, 'environment' => array_values($env), 'classes' => array_keys($classMap)];
-    }
-
-    private function resolvedName(Name $name): string
-    {
-        $resolved = $name->getAttribute('resolvedName');
-        return ltrim(($resolved instanceof Name ? $resolved : $name)->toString(), '\\');
-    }
-
-    private function string(string $value): string
-    {
-        return strlen($value) <= self::MAX_STRING_BYTES ? $value : substr($value, 0, self::MAX_STRING_BYTES);
+        return is_string($expr->name) ? ($this->variables[$expr->name] ?? $this->dynamic()) : $this->dynamic();
     }
 }

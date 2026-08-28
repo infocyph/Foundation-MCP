@@ -19,6 +19,7 @@
     "require-dev": {
         "infocyph/phpforge": "dev-main@dev"
     },
+    "prefer-stable": true,
     "autoload": {
         "psr-4": {
             "Infocyph\\FoundationMcp\\": "src/"
@@ -36,10 +37,10 @@
         "allow-plugins": {
             "ergebnis/composer-normalize": true,
             "infocyph/phpforge": true,
-            "pestphp/pest-plugin": true
+            "pestphp/pest-plugin": true,
+            "php-http/discovery": true
         },
         "optimize-autoloader": true,
         "sort-packages": true
-    },
-    "prefer-stable": true
+    }
 }

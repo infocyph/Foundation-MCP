@@ -17,8 +17,7 @@ final readonly class ArchitectureInspector
         private ModuleCatalogReader $modules,
         private ProviderInspector $providers,
         private RuntimeInspector $runtime,
-    ) {
-    }
+    ) {}
 
     /** @return array<string,mixed> */
     public function inspect(): array

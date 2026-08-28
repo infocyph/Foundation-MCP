@@ -11,11 +11,10 @@ final readonly class ComposerResource
 {
     public function __construct(
         private ToolServices $services,
-    ) {
-    }
+    ) {}
 
     public function execute(): string
     {
-        return ResourcePayload::json((new PackagesTool($this->services))->execute(limit: 100));
+        return ResourcePayload::json(new PackagesTool($this->services)->execute(limit: 100));
     }
 }

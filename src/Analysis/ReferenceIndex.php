@@ -28,14 +28,16 @@ final class ReferenceIndex
     private const int MAX_USAGE_RESULTS = 500;
 
     private readonly PhpAnalyzer $analyzer;
-    private readonly SourceFileFinder $files;
-    private readonly SymbolIndex $symbols;
 
-    /** @var array<string, ReferenceFile> */
-    private array $project = [];
+    private readonly SourceFileFinder $files;
+
+    private readonly SymbolIndex $symbols;
 
     /** @var array<string, array<string, ReferenceFile>> */
     private array $packages = [];
+
+    /** @var array<string, ReferenceFile> */
+    private array $project = [];
 
     public function __construct(
         Project $project,
@@ -49,14 +51,34 @@ final class ReferenceIndex
         $this->symbols = $symbols ?? new SymbolIndex($project, $composer, $this->analyzer, $this->files);
     }
 
-    /** @return list<IndexedReference> */
-    public function project(): array
+    /** @return list<ReferenceDiagnostic> */
+    public function diagnostics(?string $package = null): array
     {
-        $symbolList = $this->symbols->project();
-        $manifest = $this->files->project();
-        $this->refresh($this->project, $manifest, null, $symbolList);
+        if ($package === null) {
+            $this->project();
+            $index = $this->project;
+        } else {
+            $this->package($package);
+            $index = $this->packages[$package];
+        }
 
-        return $this->references($this->project, $symbolList);
+        $diagnostics = [];
+
+        foreach ($index as $file) {
+            array_push($diagnostics, ...$file['diagnostics']);
+        }
+
+        usort($diagnostics, static fn(array $left, array $right): int => [
+            $left['path'],
+            $left['line'] ?? 0,
+            $left['code'],
+        ] <=> [
+            $right['path'],
+            $right['line'] ?? 0,
+            $right['code'],
+        ]);
+
+        return $diagnostics;
     }
 
     /** @return list<IndexedReference> */
@@ -69,6 +91,16 @@ final class ReferenceIndex
         $this->packages[$package] = $index;
 
         return $this->references($index, $symbolList);
+    }
+
+    /** @return list<IndexedReference> */
+    public function project(): array
+    {
+        $symbolList = $this->symbols->project();
+        $manifest = $this->files->project();
+        $this->refresh($this->project, $manifest, null, $symbolList);
+
+        return $this->references($this->project, $symbolList);
     }
 
     /**
@@ -118,64 +150,6 @@ final class ReferenceIndex
         }
 
         return array_slice($folded, 0, $limit);
-    }
-
-    /** @return list<ReferenceDiagnostic> */
-    public function diagnostics(?string $package = null): array
-    {
-        if ($package === null) {
-            $this->project();
-            $index = $this->project;
-        } else {
-            $this->package($package);
-            $index = $this->packages[$package];
-        }
-
-        $diagnostics = [];
-
-        foreach ($index as $file) {
-            array_push($diagnostics, ...$file['diagnostics']);
-        }
-
-        usort($diagnostics, static fn (array $left, array $right): int => [
-            $left['path'],
-            $left['line'] ?? 0,
-            $left['code'],
-        ] <=> [
-            $right['path'],
-            $right['line'] ?? 0,
-            $right['code'],
-        ]);
-
-        return $diagnostics;
-    }
-
-    /**
-     * @param array<string, ReferenceFile> $index
-     * @param array<string, string> $manifest
-     * @param list<array<string,mixed>> $symbols
-     */
-    private function refresh(array &$index, array $manifest, ?string $package, array $symbols): void
-    {
-        foreach (array_keys($index) as $path) {
-            if (!isset($manifest[$path])) {
-                unset($index[$path]);
-            }
-        }
-
-        $symbolsByPath = [];
-
-        foreach ($symbols as $symbol) {
-            $symbolsByPath[$symbol['path']][] = $symbol;
-        }
-
-        foreach ($manifest as $path => $state) {
-            if (($index[$path]['state'] ?? null) === $state) {
-                continue;
-            }
-
-            $index[$path] = $this->analyze($path, $state, $package, $symbolsByPath[$path] ?? []);
-        }
     }
 
     /**
@@ -251,6 +225,41 @@ final class ReferenceIndex
         ];
     }
 
+    /** @param IndexedReference $reference */
+    private function compatibleKind(array $reference, string $kind): bool
+    {
+        return match ($reference['relationship']) {
+            'new', 'extends', 'implements', 'trait-use', 'attribute', 'type' => in_array(
+                $kind,
+                ['class', 'interface', 'trait', 'enum'],
+                true,
+            ),
+            'class_constant' => in_array($kind, ['class_constant', 'enum_case'], true),
+            'property' => $kind === 'property',
+            'call' => str_contains($reference['target'], '::')
+                ? $kind === 'method'
+                : $kind === 'function'
+                    && ($reference['confidence'] !== 'lexical' || str_contains($reference['target'], '\\')),
+            'import' => in_array($kind, ['class', 'interface', 'trait', 'enum', 'function', 'constant'], true),
+            default => false,
+        };
+    }
+
+    /**
+     * @param IndexedReference $reference
+     * @param array<string,list<string>> $symbolsByTarget
+     */
+    private function proven(array $reference, array $symbolsByTarget): bool
+    {
+        $kinds = $symbolsByTarget[strtolower($reference['target'])] ?? [];
+        $compatible = array_values(array_filter(
+            $kinds,
+            fn(string $kind): bool => $this->compatibleKind($reference, $kind),
+        ));
+
+        return count($compatible) === 1;
+    }
+
     /**
      * @param array<string, ReferenceFile> $index
      * @param list<array<string,mixed>> $symbols
@@ -276,7 +285,7 @@ final class ReferenceIndex
             }
         }
 
-        usort($references, static fn (array $left, array $right): int => [
+        usort($references, static fn(array $left, array $right): int => [
             $left['path'],
             $left['line'],
             $left['relationship'],
@@ -294,64 +303,31 @@ final class ReferenceIndex
     }
 
     /**
-     * @param IndexedReference $reference
-     * @param array<string,list<string>> $symbolsByTarget
+     * @param array<string, ReferenceFile> $index
+     * @param array<string, string> $manifest
+     * @param list<array<string,mixed>> $symbols
      */
-    private function proven(array $reference, array $symbolsByTarget): bool
+    private function refresh(array &$index, array $manifest, ?string $package, array $symbols): void
     {
-        $kinds = $symbolsByTarget[strtolower($reference['target'])] ?? [];
-        $compatible = array_values(array_filter(
-            $kinds,
-            fn (string $kind): bool => $this->compatibleKind($reference, $kind),
-        ));
-
-        return count($compatible) === 1;
-    }
-
-    /** @param IndexedReference $reference */
-    private function compatibleKind(array $reference, string $kind): bool
-    {
-        return match ($reference['relationship']) {
-            'new', 'extends', 'implements', 'trait-use', 'attribute', 'type' => in_array(
-                $kind,
-                ['class', 'interface', 'trait', 'enum'],
-                true,
-            ),
-            'class_constant' => in_array($kind, ['class_constant', 'enum_case'], true),
-            'property' => $kind === 'property',
-            'call' => str_contains($reference['target'], '::')
-                ? $kind === 'method'
-                : $kind === 'function'
-                    && ($reference['confidence'] !== 'lexical' || str_contains($reference['target'], '\\')),
-            'import' => in_array($kind, ['class', 'interface', 'trait', 'enum', 'function', 'constant'], true),
-            default => false,
-        };
-    }
-
-    /** @param list<array<string,mixed>> $symbols */
-    private function sourceSymbol(int $line, array $symbols): ?string
-    {
-        $candidates = [];
-
-        foreach ($symbols as $symbol) {
-            if ($symbol['line'] <= $line && $symbol['end_line'] >= $line) {
-                $candidates[] = $symbol;
+        foreach (array_keys($index) as $path) {
+            if (!isset($manifest[$path])) {
+                unset($index[$path]);
             }
         }
 
-        if ($candidates === []) {
-            return null;
+        $symbolsByPath = [];
+
+        foreach ($symbols as $symbol) {
+            $symbolsByPath[$symbol['path']][] = $symbol;
         }
 
-        usort($candidates, static fn (array $left, array $right): int => [
-            $left['end_line'] - $left['line'],
-            -$left['line'],
-        ] <=> [
-            $right['end_line'] - $right['line'],
-            -$right['line'],
-        ]);
+        foreach ($manifest as $path => $state) {
+            if (($index[$path]['state'] ?? null) === $state) {
+                continue;
+            }
 
-        return $candidates[0]['symbol'];
+            $index[$path] = $this->analyze($path, $state, $package, $symbolsByPath[$path] ?? []);
+        }
     }
 
     /** @param list<string>|null $relationships @return array<string,true>|null */
@@ -372,5 +348,31 @@ final class ReferenceIndex
         }
 
         return $allowed;
+    }
+
+    /** @param list<array<string,mixed>> $symbols */
+    private function sourceSymbol(int $line, array $symbols): ?string
+    {
+        $candidates = [];
+
+        foreach ($symbols as $symbol) {
+            if ($symbol['line'] <= $line && $symbol['end_line'] >= $line) {
+                $candidates[] = $symbol;
+            }
+        }
+
+        if ($candidates === []) {
+            return null;
+        }
+
+        usort($candidates, static fn(array $left, array $right): int => [
+            $left['end_line'] - $left['line'],
+            -$left['line'],
+        ] <=> [
+            $right['end_line'] - $right['line'],
+            -$right['line'],
+        ]);
+
+        return $candidates[0]['symbol'];
     }
 }

@@ -9,8 +9,8 @@ use InvalidArgumentException;
 
 final readonly class InspectTool
 {
-    public const string NAME = 'foundation_inspect';
     public const string DESCRIPTION = 'Inspect one Foundation structural concern: architecture, modules, routes, commands, providers, config, workers, schedules, runtime/bootstrap, or Composer autoload roots.';
+
     public const array INPUT_SCHEMA = [
         'type' => 'object',
         'properties' => [
@@ -23,10 +23,11 @@ final readonly class InspectTool
         'additionalProperties' => false,
     ];
 
+    public const string NAME = 'foundation_inspect';
+
     public function __construct(
         private ToolServices $services,
-    ) {
-    }
+    ) {}
 
     /** @return array<string,mixed> */
     public function execute(string $kind): array
@@ -67,6 +68,22 @@ final readonly class InspectTool
         ];
     }
 
+    /** @param list<string> $roots @return list<string> */
+    private function relativeRoots(array $roots): array
+    {
+        $projectRoot = str_replace('\\', '/', rtrim($this->services->project->root, '/\\'));
+        $result = [];
+
+        foreach ($roots as $root) {
+            $root = str_replace('\\', '/', rtrim($root, '/\\'));
+            $result[] = $root === $projectRoot ? '.' : substr($root, strlen($projectRoot) + 1);
+        }
+
+        sort($result, SORT_STRING);
+
+        return array_values(array_unique($result));
+    }
+
     private function safeAutoload(mixed $value): mixed
     {
         if (is_array($value)) {
@@ -75,6 +92,7 @@ final readonly class InspectTool
             foreach ($value as $key => $item) {
                 if (++$count > 200) {
                     $result['__truncated__'] = true;
+
                     break;
                 }
                 $result[$key] = $this->safeAutoload($item);
@@ -91,22 +109,6 @@ final readonly class InspectTool
             return '[DENIED_PATH]';
         }
 
-        return strlen($value) > 2_048 ? substr($value, 0, 2_048).'…' : $value;
-    }
-
-    /** @param list<string> $roots @return list<string> */
-    private function relativeRoots(array $roots): array
-    {
-        $projectRoot = str_replace('\\', '/', rtrim($this->services->project->root, '/\\'));
-        $result = [];
-
-        foreach ($roots as $root) {
-            $root = str_replace('\\', '/', rtrim($root, '/\\'));
-            $result[] = $root === $projectRoot ? '.' : substr($root, strlen($projectRoot) + 1);
-        }
-
-        sort($result, SORT_STRING);
-
-        return array_values(array_unique($result));
+        return strlen($value) > 2_048 ? substr($value, 0, 2_048) . '…' : $value;
     }
 }

@@ -9,7 +9,7 @@ use RuntimeException;
 
 final readonly class SourceRoots
 {
-    private const STRUCTURAL_DIRECTORIES = ['bootstrap', 'config', 'routes', 'database', 'docs'];
+    private const array STRUCTURAL_DIRECTORIES = ['bootstrap', 'config', 'routes', 'database', 'docs'];
 
     /**
      * @param list<string> $application
@@ -20,8 +20,7 @@ final readonly class SourceRoots
         public array $application,
         public array $tests,
         public array $structural,
-    ) {
-    }
+    ) {}
 
     public static function discover(Project $project): self
     {
@@ -29,14 +28,14 @@ final readonly class SourceRoots
         $application = self::autoloadRoots($project->composer['autoload'] ?? [], $paths);
         $tests = self::autoloadRoots($project->composer['autoload-dev'] ?? [], $paths);
 
-        if (is_dir($project->root.DIRECTORY_SEPARATOR.'tests')) {
+        if (is_dir($project->root . DIRECTORY_SEPARATOR . 'tests')) {
             $tests[] = $paths->projectDirectory('tests');
         }
 
         $structural = [];
 
         foreach (self::STRUCTURAL_DIRECTORIES as $directory) {
-            if (!is_dir($project->root.DIRECTORY_SEPARATOR.$directory)) {
+            if (!is_dir($project->root . DIRECTORY_SEPARATOR . $directory)) {
                 continue;
             }
 
@@ -59,8 +58,6 @@ final readonly class SourceRoots
     }
 
     /**
-     * @param mixed $autoload
-     *
      * @return list<string>
      */
     private static function autoloadRoots(mixed $autoload, PathPolicy $paths): array

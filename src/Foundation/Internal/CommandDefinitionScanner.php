@@ -25,12 +25,14 @@ final readonly class CommandDefinitionScanner
         $method = $class->getMethod('define');
         if (!$method instanceof Node\Stmt\ClassMethod) {
             $metadata['dynamic_fields'][] = 'definition';
+
             return $metadata;
         }
 
         $parameter = $method->params[0] ?? null;
         if (!$parameter instanceof Node\Param || !$parameter->var instanceof Node\Expr\Variable || !is_string($parameter->var->name)) {
             $metadata['dynamic_fields'][] = 'definition';
+
             return $metadata;
         }
 
@@ -44,85 +46,6 @@ final readonly class CommandDefinitionScanner
         $metadata['dynamic_fields'] = $this->unique($metadata['dynamic_fields']);
 
         return $metadata;
-    }
-
-    /** @param CommandMetadata $metadata */
-    private function scanNode(Node $node, string $variable, array &$metadata, bool $conditional): void
-    {
-        if ($node instanceof Node\Stmt\Expression) {
-            $this->scanExpression($node->expr, $variable, $metadata, $conditional);
-            return;
-        }
-
-        if ($node instanceof Node\Stmt\If_) {
-            $this->markConditional($node->stmts, $variable, $metadata);
-            foreach ($node->elseifs as $elseif) {
-                $this->markConditional($elseif->stmts, $variable, $metadata);
-            }
-            if ($node->else !== null) {
-                $this->markConditional($node->else->stmts, $variable, $metadata);
-            }
-            return;
-        }
-
-        if ($node instanceof Node\Stmt\Foreach_ || $node instanceof Node\Stmt\For_ || $node instanceof Node\Stmt\While_ || $node instanceof Node\Stmt\Do_) {
-            $this->markConditional($node->stmts, $variable, $metadata);
-            return;
-        }
-
-        if ($node instanceof Node\Stmt\TryCatch) {
-            $this->markConditional($node->stmts, $variable, $metadata);
-            foreach ($node->catches as $catch) {
-                $this->markConditional($catch->stmts, $variable, $metadata);
-            }
-            if ($node->finally !== null) {
-                $this->markConditional($node->finally->stmts, $variable, $metadata);
-            }
-        }
-    }
-
-    /** @param list<Node\Stmt> $nodes @param CommandMetadata $metadata */
-    private function markConditional(array $nodes, string $variable, array &$metadata): void
-    {
-        foreach ($nodes as $node) {
-            $this->scanNode($node, $variable, $metadata, true);
-        }
-    }
-
-    /** @param CommandMetadata $metadata */
-    private function scanExpression(Node\Expr $expr, string $variable, array &$metadata, bool $conditional): void
-    {
-        if (!$expr instanceof Node\Expr\MethodCall) {
-            return;
-        }
-
-        $chain = $this->chain($expr, $variable);
-        if ($chain === null) {
-            return;
-        }
-
-        foreach ($chain as [$method, $args]) {
-            $this->apply($method, $args, $metadata, $conditional);
-        }
-    }
-
-    /**
-     * @return list<array{0:string,1:list<Node\Arg>}>|null
-     */
-    private function chain(Node\Expr\MethodCall $call, string $variable): ?array
-    {
-        $calls = [];
-        $cursor = $call;
-
-        while ($cursor instanceof Node\Expr\MethodCall) {
-            if (!$cursor->name instanceof Node\Identifier) {
-                return null;
-            }
-            array_unshift($calls, [$cursor->name->toString(), $cursor->args]);
-            $cursor = $cursor->var;
-        }
-
-        return $cursor instanceof Node\Expr\Variable && $cursor->name === $variable ? $calls : null;
     }
 
     /** @param list<Node\Arg> $args @param CommandMetadata $metadata */
@@ -148,24 +71,19 @@ final readonly class CommandDefinitionScanner
         };
     }
 
-    /** @param CommandMetadata $metadata */
-    private function scalarField(array &$metadata, string $field, string|bool|null $value): void
+    /** @param list<Node\Arg> $args */
+    private function arg(array $args, int $position, string $name): ?Node\Expr
     {
-        if ($value === null) {
-            $metadata['dynamic_fields'][] = $field;
-            return;
+        foreach ($args as $index => $arg) {
+            if ($arg->name instanceof Node\Identifier && $arg->name->toString() === $name) {
+                return $arg->value;
+            }
+            if ($index === $position && $arg->name === null) {
+                return $arg->value;
+            }
         }
-        $metadata[$field] = $value;
-    }
 
-    /** @param CommandMetadata $metadata */
-    private function listField(array &$metadata, string $field, ?string $value): void
-    {
-        if ($value === null) {
-            $metadata['dynamic_fields'][] = $field;
-            return;
-        }
-        $metadata[$field][] = $value;
+        return null;
     }
 
     /** @param CommandMetadata $metadata @param list<Node\Arg> $args */
@@ -179,6 +97,106 @@ final readonly class CommandDefinitionScanner
             $metadata['dynamic_fields'][] = 'arguments';
         }
         $metadata['arguments'][] = compact('name', 'description', 'required', 'variadic');
+    }
+
+    /** @param list<Node\Arg> $args */
+    private function boolArg(array $args, int $position, string $name, ?bool $default = null): ?bool
+    {
+        $expr = $this->arg($args, $position, $name);
+        if ($expr === null) {
+            return $default;
+        }
+        if (!$expr instanceof Node\Expr\ConstFetch) {
+            return null;
+        }
+
+        return match (strtolower($expr->name->toString())) {
+            'true' => true,
+            'false' => false,
+            default => null,
+        };
+    }
+
+    /**
+     * @return list<array{0:string,1:list<Node\Arg>}>|null
+     */
+    private function chain(Node\Expr\MethodCall $call, string $variable): ?array
+    {
+        $calls = [];
+        $cursor = $call;
+
+        while ($cursor instanceof Node\Expr\MethodCall) {
+            if (!$cursor->name instanceof Node\Identifier) {
+                return null;
+            }
+            array_unshift($calls, [$cursor->name->toString(), $cursor->args]);
+            $cursor = $cursor->var;
+        }
+
+        return $cursor instanceof Node\Expr\Variable && $cursor->name === $variable ? $calls : null;
+    }
+
+    /** @return CommandMetadata */
+    private function defaults(): array
+    {
+        return [
+            'name' => null,
+            'description' => '',
+            'group' => 'Application',
+            'runtime' => 'cli',
+            'capabilities' => [],
+            'aliases' => [],
+            'hidden' => false,
+            'arguments' => [],
+            'options' => [],
+            'dynamic_fields' => [],
+        ];
+    }
+
+    private function fieldFor(string $method): string
+    {
+        return match ($method) {
+            'capability' => 'capabilities',
+            'alias' => 'aliases',
+            'argument' => 'arguments',
+            'option' => 'options',
+            default => $method,
+        };
+    }
+
+    /** @param CommandMetadata $metadata */
+    private function listField(array &$metadata, string $field, ?string $value): void
+    {
+        if ($value === null) {
+            $metadata['dynamic_fields'][] = $field;
+
+            return;
+        }
+        $metadata[$field][] = $value;
+    }
+
+    /** @param list<Node\Stmt> $nodes @param CommandMetadata $metadata */
+    private function markConditional(array $nodes, string $variable, array &$metadata): void
+    {
+        foreach ($nodes as $node) {
+            $this->scanNode($node, $variable, $metadata, true);
+        }
+    }
+
+    /** @param list<Node\Arg> $args @return string|false|null */
+    private function nullableStringArg(array $args, int $position, string $name): string|false|null
+    {
+        $expr = $this->arg($args, $position, $name);
+        if ($expr === null || $this->nullLiteral($expr)) {
+            return null;
+        }
+
+        return $expr instanceof Node\Scalar\String_ ? $expr->value : false;
+    }
+
+    private function nullLiteral(Node\Expr $expr): bool
+    {
+        return $expr instanceof Node\Expr\ConstFetch && strtolower($expr->name->toString()) === 'null';
     }
 
     /** @param CommandMetadata $metadata @param list<Node\Arg> $args */
@@ -205,43 +223,6 @@ final readonly class CommandDefinitionScanner
     }
 
     /** @param list<Node\Arg> $args */
-    private function stringArg(array $args, int $position, string $name, ?string $default = null): ?string
-    {
-        $expr = $this->arg($args, $position, $name);
-        if ($expr === null) {
-            return $default;
-        }
-        return $expr instanceof Node\Scalar\String_ ? $expr->value : null;
-    }
-
-    /** @param list<Node\Arg> $args @return string|false|null */
-    private function nullableStringArg(array $args, int $position, string $name): string|false|null
-    {
-        $expr = $this->arg($args, $position, $name);
-        if ($expr === null || $this->nullLiteral($expr)) {
-            return null;
-        }
-        return $expr instanceof Node\Scalar\String_ ? $expr->value : false;
-    }
-
-    /** @param list<Node\Arg> $args */
-    private function boolArg(array $args, int $position, string $name, ?bool $default = null): ?bool
-    {
-        $expr = $this->arg($args, $position, $name);
-        if ($expr === null) {
-            return $default;
-        }
-        if (!$expr instanceof Node\Expr\ConstFetch) {
-            return null;
-        }
-        return match (strtolower($expr->name->toString())) {
-            'true' => true,
-            'false' => false,
-            default => null,
-        };
-    }
-
-    /** @param list<Node\Arg> $args */
     private function runtimeArg(array $args, int $position, string $name): ?string
     {
         $expr = $this->arg($args, $position, $name);
@@ -263,58 +244,89 @@ final readonly class CommandDefinitionScanner
         };
     }
 
-    /** @param list<Node\Arg> $args */
-    private function arg(array $args, int $position, string $name): ?Node\Expr
+    /** @param CommandMetadata $metadata */
+    private function scalarField(array &$metadata, string $field, string|bool|null $value): void
     {
-        foreach ($args as $index => $arg) {
-            if ($arg->name instanceof Node\Identifier && $arg->name->toString() === $name) {
-                return $arg->value;
+        if ($value === null) {
+            $metadata['dynamic_fields'][] = $field;
+
+            return;
+        }
+        $metadata[$field] = $value;
+    }
+
+    /** @param CommandMetadata $metadata */
+    private function scanExpression(Node\Expr $expr, string $variable, array &$metadata, bool $conditional): void
+    {
+        if (!$expr instanceof Node\Expr\MethodCall) {
+            return;
+        }
+
+        $chain = $this->chain($expr, $variable);
+        if ($chain === null) {
+            return;
+        }
+
+        foreach ($chain as [$method, $args]) {
+            $this->apply($method, $args, $metadata, $conditional);
+        }
+    }
+
+    /** @param CommandMetadata $metadata */
+    private function scanNode(Node $node, string $variable, array &$metadata, bool $conditional): void
+    {
+        if ($node instanceof Node\Stmt\Expression) {
+            $this->scanExpression($node->expr, $variable, $metadata, $conditional);
+
+            return;
+        }
+
+        if ($node instanceof Node\Stmt\If_) {
+            $this->markConditional($node->stmts, $variable, $metadata);
+            foreach ($node->elseifs as $elseif) {
+                $this->markConditional($elseif->stmts, $variable, $metadata);
             }
-            if ($index === $position && $arg->name === null) {
-                return $arg->value;
+            if ($node->else !== null) {
+                $this->markConditional($node->else->stmts, $variable, $metadata);
+            }
+
+            return;
+        }
+
+        if ($node instanceof Node\Stmt\Foreach_ || $node instanceof Node\Stmt\For_ || $node instanceof Node\Stmt\While_ || $node instanceof Node\Stmt\Do_) {
+            $this->markConditional($node->stmts, $variable, $metadata);
+
+            return;
+        }
+
+        if ($node instanceof Node\Stmt\TryCatch) {
+            $this->markConditional($node->stmts, $variable, $metadata);
+            foreach ($node->catches as $catch) {
+                $this->markConditional($catch->stmts, $variable, $metadata);
+            }
+            if ($node->finally !== null) {
+                $this->markConditional($node->finally->stmts, $variable, $metadata);
             }
         }
-        return null;
     }
 
-    private function nullLiteral(Node\Expr $expr): bool
+    /** @param list<Node\Arg> $args */
+    private function stringArg(array $args, int $position, string $name, ?string $default = null): ?string
     {
-        return $expr instanceof Node\Expr\ConstFetch && strtolower($expr->name->toString()) === 'null';
-    }
+        $expr = $this->arg($args, $position, $name);
+        if ($expr === null) {
+            return $default;
+        }
 
-    private function fieldFor(string $method): string
-    {
-        return match ($method) {
-            'capability' => 'capabilities',
-            'alias' => 'aliases',
-            'argument' => 'arguments',
-            'option' => 'options',
-            default => $method,
-        };
+        return $expr instanceof Node\Scalar\String_ ? $expr->value : null;
     }
 
     /** @param list<string> $values @return list<string> */
     private function unique(array $values): array
     {
-        $values = array_values(array_unique(array_filter($values, static fn (string $value): bool => $value !== '')));
+        $values = array_values(array_unique(array_filter($values, static fn(string $value): bool => $value !== '')));
         sort($values, SORT_STRING);
-        return $values;
-    }
 
-    /** @return CommandMetadata */
-    private function defaults(): array
-    {
-        return [
-            'name' => null,
-            'description' => '',
-            'group' => 'Application',
-            'runtime' => 'cli',
-            'capabilities' => [],
-            'aliases' => [],
-            'hidden' => false,
-            'arguments' => [],
-            'options' => [],
-            'dynamic_fields' => [],
-        ];
+        return $values;
     }
 }

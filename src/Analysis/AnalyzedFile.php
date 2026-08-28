@@ -52,8 +52,7 @@ final readonly class AnalyzedFile
         public array $references,
         public array $literalArrays,
         public array $errors,
-    ) {
-    }
+    ) {}
 
     public function valid(): bool
     {

@@ -34,23 +34,31 @@ use RuntimeException;
  */
 final class RouteInspector
 {
-    private const int MAX_SOURCE_BYTES = 1_048_576;
     private const int MAX_ATTRIBUTE_FILES = 2_500;
-    private const int MAX_ROUTES = 2_000;
+
     private const int MAX_DIAGNOSTICS = 100;
 
-    private readonly Parser $parser;
-    private readonly PathPolicy $paths;
-    private readonly SecretPolicy $secrets;
-    private readonly InstalledRoutingContract $contract;
-    private readonly SourceFileFinder $finder;
-    private readonly RouteValueResolver $values;
+    private const int MAX_ROUTES = 2_000;
 
-    /** @var list<RouteEntry> */
-    private array $routes = [];
+    private const int MAX_SOURCE_BYTES = 1_048_576;
+
+    private readonly InstalledRoutingContract $contract;
+
+    private readonly SourceFileFinder $finder;
+
+    private readonly Parser $parser;
+
+    private readonly PathPolicy $paths;
+
+    private readonly SecretPolicy $secrets;
+
+    private readonly RouteValueResolver $values;
 
     /** @var list<Diagnostic> */
     private array $diagnostics = [];
+
+    /** @var list<RouteEntry> */
+    private array $routes = [];
 
     /** @var array<string,true> */
     private array $verbs = [];
@@ -62,7 +70,7 @@ final class RouteInspector
         ?InstalledRoutingContract $contract = null,
         ?SourceFileFinder $finder = null,
     ) {
-        $this->parser = $parser ?? (new ParserFactory())->createForNewestSupportedVersion();
+        $this->parser = $parser ?? new ParserFactory()->createForNewestSupportedVersion();
         $this->paths = new PathPolicy($project->root);
         $this->secrets = new SecretPolicy();
         $this->contract = $contract ?? new InstalledRoutingContract($project, $composer, $this->parser);
@@ -83,14 +91,15 @@ final class RouteInspector
             $methods = array_values($this->contract->httpMethods());
         } catch (RuntimeException $error) {
             $this->diagnostic('routing_contract_invalid', null, null, $error->getMessage());
+
             return ['route_files' => [], 'http_methods' => [], 'routes' => [], 'diagnostics' => $this->diagnostics];
         }
 
         sort($methods, SORT_STRING);
-        $this->verbs = array_fill_keys(array_map('strtolower', $methods), true);
+        $this->verbs = array_fill_keys(array_map(strtolower(...), $methods), true);
 
         foreach ($routeFiles as $file) {
-            $this->inspectProjectRouteFile('routes/'.$file);
+            $this->inspectProjectRouteFile('routes/' . $file);
         }
         $this->inspectFoundationOAuthRoutes();
         $this->inspectAttributeRoutes();
@@ -104,93 +113,51 @@ final class RouteInspector
         ];
     }
 
-    private function inspectProjectRouteFile(string $relative): void
+    /** @param array{routes:list<RouteEntry>,diagnostics:list<Diagnostic>} $result */
+    private function append(array $result): void
     {
-        $candidate = $this->project->root.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $relative);
-        if (!is_file($candidate)) {
-            return;
-        }
-
-        try {
-            $nodes = $this->parse($this->paths->projectFile($relative), $relative);
-            if ($nodes !== null) {
-                $this->append($this->calls()->scan($nodes, ['router' => true], ['presets' => true], false, 'project_file', $relative));
-            }
-        } catch (RuntimeException $error) {
-            $this->diagnostic('route_source_invalid', $relative, null, $error->getMessage());
+        $this->appendRoutes($result['routes']);
+        foreach ($result['diagnostics'] as $diagnostic) {
+            $this->diagnostic($diagnostic['code'], $diagnostic['source'], $diagnostic['line'], $diagnostic['message']);
         }
     }
 
-    private function inspectFoundationOAuthRoutes(): void
+    /** @param list<RouteEntry> $routes */
+    private function appendRoutes(array $routes): void
     {
-        $foundation = $this->composer->foundation();
-        if ($foundation?->installPath === null) {
-            return;
-        }
+        foreach ($routes as $route) {
+            if (count($this->routes) >= self::MAX_ROUTES) {
+                $this->routeLimitDiagnostic();
 
-        $relative = 'src/Routing/OAuthRouteRegistrar.php';
-        $source = 'infocyph/foundation:'.$relative;
-
-        try {
-            $paths = new PathPolicy($this->project->root, ['infocyph/foundation' => $foundation->installPath]);
-            $nodes = $this->parse($paths->packageFile('infocyph/foundation', $relative), $source);
-            if ($nodes === null) {
                 return;
             }
-
-            foreach ($this->classMethods($nodes, 'register') as $method) {
-                $this->append($this->calls()->scan(
-                    $method->stmts ?? [],
-                    $this->registrarParameters($method),
-                    [],
-                    true,
-                    'foundation',
-                    $source,
-                ));
-            }
-        } catch (RuntimeException $error) {
-            $this->diagnostic('foundation_route_source_invalid', $source, null, $error->getMessage());
+            $this->routes[] = $route;
         }
     }
 
-    private function inspectAttributeRoutes(): void
+    /** @param list<string> $applicationRoots */
+    private function applicationPath(string $relative, array $applicationRoots): bool
     {
-        $enabled = $this->attributeRoutingEnabled();
-        if ($enabled === false) {
-            return;
+        try {
+            $path = $this->comparisonPath($this->paths->projectFile($relative));
+        } catch (RuntimeException) {
+            return false;
         }
 
-        $roots = SourceRoots::discover($this->project)->application;
-        $scanner = new AttributeRouteScanner($this->values, $this->verbs);
-        $count = 0;
-
-        foreach (array_keys($this->finder->project()) as $relative) {
-            if (!$this->applicationPath($relative, $roots)) {
-                continue;
-            }
-            if (++$count > self::MAX_ATTRIBUTE_FILES) {
-                $this->diagnostic('output_limit_exceeded', null, null, sprintf(
-                    'Attribute route inspection stopped after %d application PHP files.',
-                    self::MAX_ATTRIBUTE_FILES,
-                ));
-                break;
-            }
-
-            try {
-                $nodes = $this->parse($this->paths->projectFile($relative), $relative);
-                if ($nodes !== null) {
-                    $this->appendRoutes($scanner->scan($nodes, $relative, $enabled !== true));
-                }
-            } catch (RuntimeException $error) {
-                $this->diagnostic('route_source_invalid', $relative, null, $error->getMessage());
+        foreach ($applicationRoots as $root) {
+            $root = $this->comparisonPath($root);
+            if ($path === $root || str_starts_with($path, $root . '/')) {
+                return true;
             }
         }
+
+        return false;
     }
 
     private function attributeRoutingEnabled(): ?bool
     {
         $relative = 'config/router.php';
-        if (!is_file($this->project->root.DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'router.php')) {
+        if (!is_file($this->project->root . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'router.php')) {
             return null;
         }
 
@@ -223,29 +190,165 @@ final class RouteInspector
         );
     }
 
+    /**
+     * @param list<Node\Stmt> $nodes
+     * @return list<Node\Stmt\ClassMethod>
+     */
+    private function classMethods(array $nodes, string $name): array
+    {
+        $methods = [];
+        foreach ($nodes as $node) {
+            if ($node instanceof Node\Stmt\Namespace_) {
+                array_push($methods, ...$this->classMethods($node->stmts, $name));
+
+                continue;
+            }
+            if ($node instanceof Node\Stmt\Class_) {
+                $method = $node->getMethod($name);
+                $method instanceof Node\Stmt\ClassMethod && $methods[] = $method;
+            }
+        }
+
+        return $methods;
+    }
+
+    private function comparisonPath(string $path): string
+    {
+        $path = str_replace('\\', '/', rtrim($path, '/\\'));
+
+        return PHP_OS_FAMILY === 'Windows' ? strtolower($path) : $path;
+    }
+
+    private function diagnostic(string $code, ?string $source, ?int $line, string $message): void
+    {
+        if (count($this->diagnostics) < self::MAX_DIAGNOSTICS) {
+            $this->diagnostics[] = compact('code', 'source', 'line', 'message');
+        }
+    }
+
+    private function finalize(): void
+    {
+        usort($this->routes, static fn(array $left, array $right): int
+            => [$left['source'], $left['line'], $left['method'], $left['path'] ?? '', $left['name'] ?? '']
+            <=> [$right['source'], $right['line'], $right['method'], $right['path'] ?? '', $right['name'] ?? '']);
+        usort($this->diagnostics, static fn(array $left, array $right): int
+            => [$left['source'] ?? '', $left['line'] ?? 0, $left['code'], $left['message']]
+            <=> [$right['source'] ?? '', $right['line'] ?? 0, $right['code'], $right['message']]);
+    }
+
+    private function inspectAttributeRoutes(): void
+    {
+        $enabled = $this->attributeRoutingEnabled();
+        if ($enabled === false) {
+            return;
+        }
+
+        $roots = SourceRoots::discover($this->project)->application;
+        $scanner = new AttributeRouteScanner($this->values, $this->verbs);
+        $count = 0;
+
+        foreach (array_keys($this->finder->project()) as $relative) {
+            if (!$this->applicationPath($relative, $roots)) {
+                continue;
+            }
+            if (++$count > self::MAX_ATTRIBUTE_FILES) {
+                $this->diagnostic('output_limit_exceeded', null, null, sprintf(
+                    'Attribute route inspection stopped after %d application PHP files.',
+                    self::MAX_ATTRIBUTE_FILES,
+                ));
+
+                break;
+            }
+
+            try {
+                $nodes = $this->parse($this->paths->projectFile($relative), $relative);
+                if ($nodes !== null) {
+                    $this->appendRoutes($scanner->scan($nodes, $relative, $enabled !== true));
+                }
+            } catch (RuntimeException $error) {
+                $this->diagnostic('route_source_invalid', $relative, null, $error->getMessage());
+            }
+        }
+    }
+
+    private function inspectFoundationOAuthRoutes(): void
+    {
+        $foundation = $this->composer->foundation();
+        if ($foundation?->installPath === null) {
+            return;
+        }
+
+        $relative = 'src/Routing/OAuthRouteRegistrar.php';
+        $source = 'infocyph/foundation:' . $relative;
+
+        try {
+            $paths = new PathPolicy($this->project->root, ['infocyph/foundation' => $foundation->installPath]);
+            $nodes = $this->parse($paths->packageFile('infocyph/foundation', $relative), $source);
+            if ($nodes === null) {
+                return;
+            }
+
+            foreach ($this->classMethods($nodes, 'register') as $method) {
+                $this->append($this->calls()->scan(
+                    $method->stmts ?? [],
+                    $this->registrarParameters($method),
+                    [],
+                    true,
+                    'foundation',
+                    $source,
+                ));
+            }
+        } catch (RuntimeException $error) {
+            $this->diagnostic('foundation_route_source_invalid', $source, null, $error->getMessage());
+        }
+    }
+
+    private function inspectProjectRouteFile(string $relative): void
+    {
+        $candidate = $this->project->root . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relative);
+        if (!is_file($candidate)) {
+            return;
+        }
+
+        try {
+            $nodes = $this->parse($this->paths->projectFile($relative), $relative);
+            if ($nodes !== null) {
+                $this->append($this->calls()->scan($nodes, ['router' => true], ['presets' => true], false, 'project_file', $relative));
+            }
+        } catch (RuntimeException $error) {
+            $this->diagnostic('route_source_invalid', $relative, null, $error->getMessage());
+        }
+    }
+
     /** @return list<Node\Stmt>|null */
     private function parse(string $path, string $source): ?array
     {
         $this->secrets->assertAllowed($source);
+
         try {
             $nodes = $this->parser->parse($this->read($path));
         } catch (Error $error) {
             $this->diagnostic('parse_error', $source, $error->getStartLine() ?: null, $error->getRawMessage());
+
             return null;
         }
         if (!is_array($nodes)) {
             $this->diagnostic('parse_error', $source, null, 'PHP parser returned no syntax tree.');
+
             return null;
         }
 
         $traverser = new NodeTraverser();
         $traverser->addVisitor(new NameResolver(null, ['preserveOriginalNames' => true, 'replaceNodes' => false]));
+
         try {
             /** @var list<Node\Stmt> $resolved */
             $resolved = $traverser->traverse($nodes);
+
             return $resolved;
         } catch (Error $error) {
             $this->diagnostic('parse_error', $source, $error->getStartLine() ?: null, $error->getRawMessage());
+
             return null;
         }
     }
@@ -264,27 +367,6 @@ final class RouteInspector
         return $source;
     }
 
-    /**
-     * @param list<Node\Stmt> $nodes
-     * @return list<Node\Stmt\ClassMethod>
-     */
-    private function classMethods(array $nodes, string $name): array
-    {
-        $methods = [];
-        foreach ($nodes as $node) {
-            if ($node instanceof Node\Stmt\Namespace_) {
-                array_push($methods, ...$this->classMethods($node->stmts, $name));
-                continue;
-            }
-            if ($node instanceof Node\Stmt\Class_) {
-                $method = $node->getMethod($name);
-                $method instanceof Node\Stmt\ClassMethod && $methods[] = $method;
-            }
-        }
-
-        return $methods;
-    }
-
     /** @return array<string,true> */
     private function registrarParameters(Node\Stmt\ClassMethod $method): array
     {
@@ -301,53 +383,6 @@ final class RouteInspector
         return $routers;
     }
 
-    /** @param list<string> $applicationRoots */
-    private function applicationPath(string $relative, array $applicationRoots): bool
-    {
-        try {
-            $path = $this->comparisonPath($this->paths->projectFile($relative));
-        } catch (RuntimeException) {
-            return false;
-        }
-
-        foreach ($applicationRoots as $root) {
-            $root = $this->comparisonPath($root);
-            if ($path === $root || str_starts_with($path, $root.'/')) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private function comparisonPath(string $path): string
-    {
-        $path = str_replace('\\', '/', rtrim($path, '/\\'));
-
-        return PHP_OS_FAMILY === 'Windows' ? strtolower($path) : $path;
-    }
-
-    /** @param array{routes:list<RouteEntry>,diagnostics:list<Diagnostic>} $result */
-    private function append(array $result): void
-    {
-        $this->appendRoutes($result['routes']);
-        foreach ($result['diagnostics'] as $diagnostic) {
-            $this->diagnostic($diagnostic['code'], $diagnostic['source'], $diagnostic['line'], $diagnostic['message']);
-        }
-    }
-
-    /** @param list<RouteEntry> $routes */
-    private function appendRoutes(array $routes): void
-    {
-        foreach ($routes as $route) {
-            if (count($this->routes) >= self::MAX_ROUTES) {
-                $this->routeLimitDiagnostic();
-                return;
-            }
-            $this->routes[] = $route;
-        }
-    }
-
     private function routeLimitDiagnostic(): void
     {
         foreach ($this->diagnostics as $item) {
@@ -356,22 +391,5 @@ final class RouteInspector
             }
         }
         $this->diagnostic('output_limit_exceeded', null, null, sprintf('Route inspection is limited to %d routes.', self::MAX_ROUTES));
-    }
-
-    private function diagnostic(string $code, ?string $source, ?int $line, string $message): void
-    {
-        if (count($this->diagnostics) < self::MAX_DIAGNOSTICS) {
-            $this->diagnostics[] = compact('code', 'source', 'line', 'message');
-        }
-    }
-
-    private function finalize(): void
-    {
-        usort($this->routes, static fn (array $left, array $right): int =>
-            [$left['source'], $left['line'], $left['method'], $left['path'] ?? '', $left['name'] ?? '']
-            <=> [$right['source'], $right['line'], $right['method'], $right['path'] ?? '', $right['name'] ?? '']);
-        usort($this->diagnostics, static fn (array $left, array $right): int =>
-            [$left['source'] ?? '', $left['line'] ?? 0, $left['code'], $left['message']]
-            <=> [$right['source'] ?? '', $right['line'] ?? 0, $right['code'], $right['message']]);
     }
 }

@@ -8,9 +8,7 @@ use RuntimeException;
 
 final class SecretPolicy
 {
-    private const SECRET_EXTENSIONS = ['key', 'p12', 'pfx', 'pem', 'ppk'];
-
-    private const SECRET_BASENAMES = [
+    private const array SECRET_BASENAMES = [
         '.git-credentials',
         '.netrc',
         'auth.json',
@@ -23,6 +21,15 @@ final class SecretPolicy
         'service-account.json',
         'service_account.json',
     ];
+
+    private const array SECRET_EXTENSIONS = ['key', 'p12', 'pfx', 'pem', 'ppk'];
+
+    public function assertAllowed(string $path): void
+    {
+        if ($this->denied($path)) {
+            throw new RuntimeException('Secret-bearing resource is denied.');
+        }
+    }
 
     public function denied(string $path): bool
     {
@@ -51,12 +58,5 @@ final class SecretPolicy
         $extension = strtolower(pathinfo($basename, PATHINFO_EXTENSION));
 
         return in_array($extension, self::SECRET_EXTENSIONS, true);
-    }
-
-    public function assertAllowed(string $path): void
-    {
-        if ($this->denied($path)) {
-            throw new RuntimeException('Secret-bearing resource is denied.');
-        }
     }
 }

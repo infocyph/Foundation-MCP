@@ -15,16 +15,15 @@ final readonly class Project
         public HostType $hostType,
         public array $composer,
         public array $evidence,
-    ) {
+    ) {}
+
+    public function composerPath(): string
+    {
+        return $this->root . DIRECTORY_SEPARATOR . 'composer.json';
     }
 
     public function supported(): bool
     {
         return $this->hostType !== HostType::Unsupported;
-    }
-
-    public function composerPath(): string
-    {
-        return $this->root.DIRECTORY_SEPARATOR.'composer.json';
     }
 }

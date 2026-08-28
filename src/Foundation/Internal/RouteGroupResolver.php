@@ -14,6 +14,53 @@ final readonly class RouteGroupResolver
 {
     public function __construct(private RouteValueResolver $values) {}
 
+    /** @param Scope $parent @param Group $group @return Scope */
+    public function child(array $parent, array $group): array
+    {
+        return [
+            'prefix' => $group['prefix'] === null || $parent['prefix'] === null
+                ? null
+                : $this->values->joinPath($parent['prefix'], $group['prefix']),
+            'name_prefix' => $group['name_prefix'] === null || $parent['name_prefix'] === null
+                ? null
+                : $parent['name_prefix'] . $group['name_prefix'],
+            'middleware' => [...$parent['middleware'], ...$group['middleware']],
+            'domain' => $group['domain'] ?? $parent['domain'],
+            'dynamic' => [...$parent['dynamic'], ...$group['dynamic']],
+        ];
+    }
+
+    /** @return Scope */
+    public function emptyScope(): array
+    {
+        return ['prefix' => '', 'name_prefix' => '', 'middleware' => [], 'domain' => null, 'dynamic' => []];
+    }
+
+    /** @param array<int|string,Node\Arg> $args @return Group */
+    public function preset(array $args): array
+    {
+        $presetExpr = $this->values->arg($args, 1, 'preset');
+        $callback = $this->closureArg($args, 2, 'callback');
+        [$prefix, $prefixDynamic] = $this->groupString($this->values->arg($args, 3, 'prefix'), '');
+        [$domain, $domainDynamic] = $this->groupDomain($this->values->arg($args, 4, 'domain'));
+        [$name, $nameDynamic] = $this->groupString($this->values->arg($args, 5, 'namePrefix'), '');
+        $preset = $presetExpr instanceof Node\Expr ? $this->values->stringValue($presetExpr) : null;
+        $dynamic = ['middleware'];
+        $preset === null && $dynamic[] = 'preset';
+        $prefixDynamic && $dynamic[] = 'prefix';
+        $domainDynamic && $dynamic[] = 'domain';
+        $nameDynamic && $dynamic[] = 'name_prefix';
+
+        return [
+            'prefix' => $prefix,
+            'name_prefix' => $name,
+            'middleware' => $preset === null ? [] : ['@preset:' . $preset],
+            'domain' => $domain,
+            'callback' => $callback,
+            'dynamic' => $dynamic,
+        ];
+    }
+
     /** @param array<int|string,Node\Arg> $args @return Group */
     public function router(array $args): array
     {
@@ -56,53 +103,6 @@ final readonly class RouteGroupResolver
         ];
     }
 
-    /** @param array<int|string,Node\Arg> $args @return Group */
-    public function preset(array $args): array
-    {
-        $presetExpr = $this->values->arg($args, 1, 'preset');
-        $callback = $this->closureArg($args, 2, 'callback');
-        [$prefix, $prefixDynamic] = $this->groupString($this->values->arg($args, 3, 'prefix'), '');
-        [$domain, $domainDynamic] = $this->groupDomain($this->values->arg($args, 4, 'domain'));
-        [$name, $nameDynamic] = $this->groupString($this->values->arg($args, 5, 'namePrefix'), '');
-        $preset = $presetExpr instanceof Node\Expr ? $this->values->stringValue($presetExpr) : null;
-        $dynamic = ['middleware'];
-        $preset === null && $dynamic[] = 'preset';
-        $prefixDynamic && $dynamic[] = 'prefix';
-        $domainDynamic && $dynamic[] = 'domain';
-        $nameDynamic && $dynamic[] = 'name_prefix';
-
-        return [
-            'prefix' => $prefix,
-            'name_prefix' => $name,
-            'middleware' => $preset === null ? [] : ['@preset:'.$preset],
-            'domain' => $domain,
-            'callback' => $callback,
-            'dynamic' => $dynamic,
-        ];
-    }
-
-    /** @param Scope $parent @param Group $group @return Scope */
-    public function child(array $parent, array $group): array
-    {
-        return [
-            'prefix' => $group['prefix'] === null || $parent['prefix'] === null
-                ? null
-                : $this->values->joinPath($parent['prefix'], $group['prefix']),
-            'name_prefix' => $group['name_prefix'] === null || $parent['name_prefix'] === null
-                ? null
-                : $parent['name_prefix'].$group['name_prefix'],
-            'middleware' => [...$parent['middleware'], ...$group['middleware']],
-            'domain' => $group['domain'] ?? $parent['domain'],
-            'dynamic' => [...$parent['dynamic'], ...$group['dynamic']],
-        ];
-    }
-
-    /** @return Scope */
-    public function emptyScope(): array
-    {
-        return ['prefix' => '', 'name_prefix' => '', 'middleware' => [], 'domain' => null, 'dynamic' => []];
-    }
-
     /** @return Group */
     private function arrayGroup(Node\Expr\Array_ $expr, ?Node\Expr\Closure $callback): array
     {
@@ -138,28 +138,6 @@ final readonly class RouteGroupResolver
         return $value instanceof Node\Expr\Closure ? $value : null;
     }
 
-    private function implicitCallback(?Node\Expr $domain, ?Node\Expr $middleware, ?Node\Expr $name): ?Node\Expr\Closure
-    {
-        foreach ([$domain, $middleware, $name] as $candidate) {
-            if ($candidate instanceof Node\Expr\Closure) {
-                return $candidate;
-            }
-        }
-
-        return null;
-    }
-
-    /** @return array{0:?string,1:bool} */
-    private function groupString(?Node\Expr $expr, string $default): array
-    {
-        if ($expr === null || $this->nullLiteral($expr)) {
-            return [$default, false];
-        }
-        $value = $this->values->stringValue($expr);
-
-        return $value === null ? [null, true] : [$value, false];
-    }
-
     /** @return array{0:?string,1:bool} */
     private function groupDomain(?Node\Expr $expr): array
     {
@@ -180,6 +158,28 @@ final readonly class RouteGroupResolver
         $value = $this->values->middlewareValue($expr);
 
         return $value === null ? [[], true] : [$value, false];
+    }
+
+    /** @return array{0:?string,1:bool} */
+    private function groupString(?Node\Expr $expr, string $default): array
+    {
+        if ($expr === null || $this->nullLiteral($expr)) {
+            return [$default, false];
+        }
+        $value = $this->values->stringValue($expr);
+
+        return $value === null ? [null, true] : [$value, false];
+    }
+
+    private function implicitCallback(?Node\Expr $domain, ?Node\Expr $middleware, ?Node\Expr $name): ?Node\Expr\Closure
+    {
+        foreach ([$domain, $middleware, $name] as $candidate) {
+            if ($candidate instanceof Node\Expr\Closure) {
+                return $candidate;
+            }
+        }
+
+        return null;
     }
 
     private function nullLiteral(Node\Expr $expr): bool

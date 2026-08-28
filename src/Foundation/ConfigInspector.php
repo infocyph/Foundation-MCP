@@ -24,14 +24,19 @@ use RuntimeException;
  */
 final class ConfigInspector
 {
-    private const int MAX_FILES = 256;
-    private const int MAX_ENTRIES = 3_000;
     private const int MAX_DIAGNOSTICS = 100;
 
-    private readonly PathPolicy $paths;
-    private readonly SecretPolicy $secrets;
-    private readonly SymbolIndex $symbols;
+    private const int MAX_ENTRIES = 3_000;
+
+    private const int MAX_FILES = 256;
+
     private readonly ConfigEntryExtractor $extractor;
+
+    private readonly PathPolicy $paths;
+
+    private readonly SecretPolicy $secrets;
+
+    private readonly SymbolIndex $symbols;
 
     /** @var list<Diagnostic> */
     private array $diagnostics = [];
@@ -42,7 +47,7 @@ final class ConfigInspector
         ?Parser $parser = null,
         ?SymbolIndex $symbols = null,
     ) {
-        $parser ??= (new ParserFactory())->createForNewestSupportedVersion();
+        $parser ??= new ParserFactory()->createForNewestSupportedVersion();
         $this->paths = new PathPolicy($project->root);
         $this->secrets = new SecretPolicy();
         $this->symbols = $symbols ?? new SymbolIndex($project, $composer);
@@ -94,69 +99,21 @@ final class ConfigInspector
         ];
     }
 
-    /** @return list<ConfigEntry> */
-    private function foundationDefaults(): array
+    private function absolute(string $path): bool
     {
-        $contract = $this->packageFile('infocyph/foundation', 'src/Config/ConfigLoader.php');
-        if ($contract === null) {
-            $this->diagnostic('config_contract_missing', null, null, 'Installed Foundation config contract is unavailable.');
-            return [];
-        }
-        $nodes = $this->extractor->parse($contract, 'infocyph/foundation:src/Config/ConfigLoader.php');
-        if ($nodes === null) {
-            return [];
-        }
-
-        $entries = [];
-        foreach ($this->defaultClasses($nodes) as $class) {
-            $path = $this->packageClassFile('infocyph/foundation', $class);
-            if ($path === null) {
-                $this->diagnostic('config_default_source_missing', null, null, sprintf('Foundation default source "%s" could not be resolved.', $class));
-                continue;
-            }
-            $source = 'infocyph/foundation:'.$this->relativePackagePath('infocyph/foundation', $path);
-            $this->append($entries, $this->extractor->method($path, $source, $class, 'all', 'foundation_defaults', 'infocyph/foundation'));
-        }
-        return $entries;
+        return preg_match('/^(?:[A-Z]:[\\\\\/]|\\\\\\\\|\/)/i', $path) === 1;
     }
 
-    /** @param list<Node\Stmt> $nodes @return list<string> */
-    private function defaultClasses(array $nodes): array
+    /** @param list<ConfigEntry> $target @param list<ConfigEntry> $items */
+    private function append(array &$target, array $items): void
     {
-        $classes = [];
-        foreach ($this->extractor->classes($nodes) as $class) {
-            foreach ($class->getMethods() as $method) {
-                if ($method->name->toString() !== 'defaults') {
-                    continue;
-                }
-                foreach ($method->stmts ?? [] as $statement) {
-                    $this->collectAllCalls($statement, $classes);
-                }
-            }
+        $remaining = self::MAX_ENTRIES - count($target);
+        if ($remaining <= 0) {
+            return;
         }
-        return array_values(array_unique($classes));
-    }
-
-    /** @param list<string> $classes */
-    private function collectAllCalls(Node $node, array &$classes): void
-    {
-        if ($node instanceof Node\Expr\StaticCall
-            && $node->class instanceof Node\Name
-            && $node->name instanceof Node\Identifier
-            && $node->name->toString() === 'all') {
-            $classes[] = $this->resolvedName($node->class);
-        }
-        foreach ($node->getSubNodeNames() as $name) {
-            $value = $node->{$name};
-            if ($value instanceof Node) {
-                $this->collectAllCalls($value, $classes);
-            } elseif (is_array($value)) {
-                foreach ($value as $child) {
-                    if ($child instanceof Node) {
-                        $this->collectAllCalls($child, $classes);
-                    }
-                }
-            }
+        array_push($target, ...array_slice($items, 0, $remaining));
+        if (count($items) > $remaining) {
+            $this->diagnostic('output_limit_exceeded', null, null, sprintf('Config inspection is limited to %d entries.', self::MAX_ENTRIES));
         }
     }
 
@@ -164,7 +121,7 @@ final class ConfigInspector
     private function bootstrap(): array
     {
         $relative = 'bootstrap/app.php';
-        if (!is_file($this->project->root.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'app.php')) {
+        if (!is_file($this->project->root . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php')) {
             return [null, null, [], 'config'];
         }
 
@@ -173,6 +130,7 @@ final class ConfigInspector
             $this->secrets->assertAllowed($relative);
         } catch (RuntimeException $error) {
             $this->diagnostic('bootstrap_config_invalid', $relative, null, $error->getMessage());
+
             return [null, null, [], null];
         }
 
@@ -180,6 +138,7 @@ final class ConfigInspector
         $return = $nodes === null ? null : $this->extractor->topLevelReturn($nodes);
         if (!$return?->expr instanceof Node\Expr\StaticCall || !$return->expr->class instanceof Node\Name) {
             $this->diagnostic('bootstrap_config_dynamic', $relative, $return?->getStartLine(), 'Bootstrap runtime/config call is not statically inspectable.');
+
             return [null, null, [], null];
         }
 
@@ -215,6 +174,29 @@ final class ConfigInspector
         return [$runtime, $preset, $entries, $this->configDirectory($entries)];
     }
 
+    /** @param list<string> $classes */
+    private function collectAllCalls(Node $node, array &$classes): void
+    {
+        if ($node instanceof Node\Expr\StaticCall
+            && $node->class instanceof Node\Name
+            && $node->name instanceof Node\Identifier
+            && $node->name->toString() === 'all') {
+            $classes[] = $this->resolvedName($node->class);
+        }
+        foreach ($node->getSubNodeNames() as $name) {
+            $value = $node->{$name};
+            if ($value instanceof Node) {
+                $this->collectAllCalls($value, $classes);
+            } elseif (is_array($value)) {
+                foreach ($value as $child) {
+                    if ($child instanceof Node) {
+                        $this->collectAllCalls($child, $classes);
+                    }
+                }
+            }
+        }
+    }
+
     /** @param list<ConfigEntry> $inline */
     private function configDirectory(array $inline): ?string
     {
@@ -224,82 +206,74 @@ final class ConfigInspector
             }
             if ($entry['status'] !== 'literal' || !is_string($entry['value']) || $entry['value'] === '') {
                 $this->diagnostic('config_path_dynamic', 'bootstrap/app.php', $entry['line'], 'Configured config directory is dynamic; project config files were not scanned.');
+
                 return null;
             }
             $path = trim(str_replace('\\', '/', $entry['value']), '/');
             if ($this->absolute($entry['value']) || in_array('..', explode('/', $path), true)) {
                 $this->diagnostic('config_path_outside_project', 'bootstrap/app.php', $entry['line'], 'Config directories outside the approved project root are not inspected.');
+
                 return null;
             }
+
             return $path;
         }
+
         return 'config';
     }
 
-    /** @return list<ConfigEntry> */
-    private function projectConfig(?string $directory): array
+    /** @param list<Node\Stmt> $nodes @return list<string> */
+    private function defaultClasses(array $nodes): array
     {
-        if ($directory === null) {
-            return [];
-        }
-        $root = $this->project->root.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $directory);
-        if (!is_dir($root)) {
-            return [];
+        $classes = [];
+        foreach ($this->extractor->classes($nodes) as $class) {
+            foreach ($class->getMethods() as $method) {
+                if ($method->name->toString() !== 'defaults') {
+                    continue;
+                }
+                foreach ($method->stmts ?? [] as $statement) {
+                    $this->collectAllCalls($statement, $classes);
+                }
+            }
         }
 
-        $files = glob(rtrim($root, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.'*.php') ?: [];
-        sort($files, SORT_STRING);
-        if (count($files) > self::MAX_FILES) {
-            $files = array_slice($files, 0, self::MAX_FILES);
-            $this->diagnostic('output_limit_exceeded', $directory, null, sprintf('Config inspection is limited to %d project files.', self::MAX_FILES));
-        }
+        return array_values(array_unique($classes));
+    }
 
-        $entries = [];
-        foreach ($files as $file) {
-            $namespace = pathinfo($file, PATHINFO_FILENAME);
-            if ($namespace === '' || str_starts_with($namespace, '_')) {
-                continue;
-            }
-            $relative = trim($directory, '/').'/'.basename($file);
-            try {
-                $path = $this->paths->projectFile($relative);
-                $this->secrets->assertAllowed($relative);
-            } catch (RuntimeException $error) {
-                $this->diagnostic('config_source_invalid', $relative, null, $error->getMessage());
-                continue;
-            }
-            $this->append($entries, $this->extractor->file($path, $relative, $namespace, 'project', 'project'));
+    private function diagnostic(string $code, ?string $source, ?int $line, string $message): void
+    {
+        if (count($this->diagnostics) < self::MAX_DIAGNOSTICS) {
+            $this->diagnostics[] = compact('code', 'source', 'line', 'message');
         }
-        return $entries;
     }
 
     /** @return list<ConfigEntry> */
-    private function preset(string $class): array
+    private function foundationDefaults(): array
     {
-        $matches = $this->symbols->find($class);
-        if (count($matches) === 1 && isset($matches[0]['path'])) {
-            try {
-                $path = $this->paths->projectFile($matches[0]['path']);
-                return $this->extractor->method($path, $matches[0]['path'], $class, 'config', 'preset', 'project');
-            } catch (RuntimeException $error) {
-                $this->diagnostic('preset_source_invalid', $matches[0]['path'], null, $error->getMessage());
-                return [];
-            }
+        $contract = $this->packageFile('infocyph/foundation', 'src/Config/ConfigLoader.php');
+        if ($contract === null) {
+            $this->diagnostic('config_contract_missing', null, null, 'Installed Foundation config contract is unavailable.');
+
+            return [];
+        }
+        $nodes = $this->extractor->parse($contract, 'infocyph/foundation:src/Config/ConfigLoader.php');
+        if ($nodes === null) {
+            return [];
         }
 
-        foreach ($this->composer->packages() as $package) {
-            if ($package->installPath === null) {
+        $entries = [];
+        foreach ($this->defaultClasses($nodes) as $class) {
+            $path = $this->packageClassFile('infocyph/foundation', $class);
+            if ($path === null) {
+                $this->diagnostic('config_default_source_missing', null, null, sprintf('Foundation default source "%s" could not be resolved.', $class));
+
                 continue;
             }
-            $path = $this->packageClassFile($package->name, $class);
-            if ($path !== null) {
-                $source = $package->name.':'.$this->relativePackagePath($package->name, $path);
-                return $this->extractor->method($path, $source, $class, 'config', 'preset', $package->name);
-            }
+            $source = 'infocyph/foundation:' . $this->relativePackagePath('infocyph/foundation', $path);
+            $this->append($entries, $this->extractor->method($path, $source, $class, 'all', 'foundation_defaults', 'infocyph/foundation'));
         }
 
-        $this->diagnostic('preset_source_missing', 'bootstrap/app.php', null, sprintf('Selected preset "%s" could not be resolved statically.', $class));
-        return [];
+        return $entries;
     }
 
     /** @param list<ConfigEntry> $entries */
@@ -315,17 +289,11 @@ final class ConfigInspector
         }
     }
 
-    /** @param list<ConfigEntry> $target @param list<ConfigEntry> $items */
-    private function append(array &$target, array $items): void
+    private function newClass(Node\Expr $expr): ?string
     {
-        $remaining = self::MAX_ENTRIES - count($target);
-        if ($remaining <= 0) {
-            return;
-        }
-        array_push($target, ...array_slice($items, 0, $remaining));
-        if (count($items) > $remaining) {
-            $this->diagnostic('output_limit_exceeded', null, null, sprintf('Config inspection is limited to %d entries.', self::MAX_ENTRIES));
-        }
+        return $expr instanceof Node\Expr\New_ && $expr->class instanceof Node\Name
+            ? $this->resolvedName($expr->class)
+            : null;
     }
 
     private function packageClassFile(string $packageName, string $class): ?string
@@ -343,13 +311,14 @@ final class ConfigInspector
                 if (!is_string($directory)) {
                     continue;
                 }
-                $relative = trim(str_replace('\\', '/', $directory), '/').'/'.str_replace('\\', '/', substr($class, strlen($prefix))).'.php';
+                $relative = trim(str_replace('\\', '/', $directory), '/') . '/' . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
                 $path = $this->packageFile($packageName, $relative);
                 if ($path !== null && is_file($path)) {
                     return $path;
                 }
             }
         }
+
         return null;
     }
 
@@ -359,19 +328,102 @@ final class ConfigInspector
         if ($root === null) {
             return null;
         }
+
         try {
-            return (new PathPolicy($this->project->root, [$package => $root]))->packageFile($package, $relative);
+            return new PathPolicy($this->project->root, [$package => $root])->packageFile($package, $relative);
         } catch (RuntimeException $error) {
-            $this->diagnostic('package_source_invalid', $package.':'.$relative, null, $error->getMessage());
+            $this->diagnostic('package_source_invalid', $package . ':' . $relative, null, $error->getMessage());
+
             return null;
         }
+    }
+
+    /** @return list<ConfigEntry> */
+    private function preset(string $class): array
+    {
+        $matches = $this->symbols->find($class);
+        if (count($matches) === 1 && isset($matches[0]['path'])) {
+            try {
+                $path = $this->paths->projectFile($matches[0]['path']);
+
+                return $this->extractor->method($path, $matches[0]['path'], $class, 'config', 'preset', 'project');
+            } catch (RuntimeException $error) {
+                $this->diagnostic('preset_source_invalid', $matches[0]['path'], null, $error->getMessage());
+
+                return [];
+            }
+        }
+
+        foreach ($this->composer->packages() as $package) {
+            if ($package->installPath === null) {
+                continue;
+            }
+            $path = $this->packageClassFile($package->name, $class);
+            if ($path !== null) {
+                $source = $package->name . ':' . $this->relativePackagePath($package->name, $path);
+
+                return $this->extractor->method($path, $source, $class, 'config', 'preset', $package->name);
+            }
+        }
+
+        $this->diagnostic('preset_source_missing', 'bootstrap/app.php', null, sprintf('Selected preset "%s" could not be resolved statically.', $class));
+
+        return [];
+    }
+
+    /** @return list<ConfigEntry> */
+    private function projectConfig(?string $directory): array
+    {
+        if ($directory === null) {
+            return [];
+        }
+        $root = $this->project->root . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $directory);
+        if (!is_dir($root)) {
+            return [];
+        }
+
+        $files = glob(rtrim($root, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . '*.php') ?: [];
+        sort($files, SORT_STRING);
+        if (count($files) > self::MAX_FILES) {
+            $files = array_slice($files, 0, self::MAX_FILES);
+            $this->diagnostic('output_limit_exceeded', $directory, null, sprintf('Config inspection is limited to %d project files.', self::MAX_FILES));
+        }
+
+        $entries = [];
+        foreach ($files as $file) {
+            $namespace = pathinfo($file, PATHINFO_FILENAME);
+            if ($namespace === '' || str_starts_with($namespace, '_')) {
+                continue;
+            }
+            $relative = trim($directory, '/') . '/' . basename($file);
+
+            try {
+                $path = $this->paths->projectFile($relative);
+                $this->secrets->assertAllowed($relative);
+            } catch (RuntimeException $error) {
+                $this->diagnostic('config_source_invalid', $relative, null, $error->getMessage());
+
+                continue;
+            }
+            $this->append($entries, $this->extractor->file($path, $relative, $namespace, 'project', 'project'));
+        }
+
+        return $entries;
     }
 
     private function relativePackagePath(string $package, string $path): string
     {
         $root = $this->composer->packageRoots([$package])[$package] ?? '';
         $root = str_replace('\\', '/', rtrim($root, '/\\'));
+
         return ltrim(substr(str_replace('\\', '/', $path), strlen($root)), '/');
+    }
+
+    private function resolvedName(Node\Name $name): string
+    {
+        $resolved = $name->getAttribute('resolvedName');
+
+        return ltrim(($resolved instanceof Node\Name ? $resolved : $name)->toString(), '\\');
     }
 
     private function runtimeMode(Node\Expr $expr): ?string
@@ -380,31 +432,7 @@ final class ConfigInspector
             return null;
         }
         $name = strtolower($expr->name->toString());
+
         return in_array($name, ['web', 'cli', 'worker', 'scheduler'], true) ? $name : null;
-    }
-
-    private function newClass(Node\Expr $expr): ?string
-    {
-        return $expr instanceof Node\Expr\New_ && $expr->class instanceof Node\Name
-            ? $this->resolvedName($expr->class)
-            : null;
-    }
-
-    private function resolvedName(Node\Name $name): string
-    {
-        $resolved = $name->getAttribute('resolvedName');
-        return ltrim(($resolved instanceof Node\Name ? $resolved : $name)->toString(), '\\');
-    }
-
-    private function absolute(string $path): bool
-    {
-        return preg_match('/^(?:[A-Z]:[\\\\\/]|\\\\\\\\|\/)/i', $path) === 1;
-    }
-
-    private function diagnostic(string $code, ?string $source, ?int $line, string $message): void
-    {
-        if (count($this->diagnostics) < self::MAX_DIAGNOSTICS) {
-            $this->diagnostics[] = compact('code', 'source', 'line', 'message');
-        }
     }
 }

@@ -27,14 +27,7 @@ final readonly class SourceFileFinder
     public function __construct(
         private Project $project,
         private ComposerInspector $composer,
-    ) {
-    }
-
-    /** @return array<string, string> relative path => metadata state */
-    public function project(): array
-    {
-        return $this->collect(SourceRoots::discover($this->project)->all(), $this->project->root);
-    }
+    ) {}
 
     /** @return array<string, string> relative path => metadata state */
     public function package(string $package): array
@@ -49,6 +42,38 @@ final readonly class SourceFileFinder
         $roots = $this->packageRoots($installed, $paths);
 
         return $this->collect($roots, $installed->installPath);
+    }
+
+    /** @return array<string, string> relative path => metadata state */
+    public function project(): array
+    {
+        return $this->collect(SourceRoots::discover($this->project)->all(), $this->project->root);
+    }
+
+    /** @param array<string, string> $files */
+    private function addFile(array &$files, string $path, string $base, SecretPolicy $secrets): void
+    {
+        $relative = $this->relative($path, $base);
+
+        if (
+            $relative === null
+            || $this->excluded($relative)
+            || $secrets->denied($relative)
+            || strtolower(pathinfo($relative, PATHINFO_EXTENSION)) !== 'php'
+        ) {
+            return;
+        }
+
+        $size = filesize($path);
+        $mtime = filemtime($path);
+        $ctime = filectime($path);
+
+        $files[$relative] = sprintf(
+            '%d:%d:%d',
+            $size === false ? -1 : $size,
+            $mtime === false ? -1 : $mtime,
+            $ctime === false ? -1 : $ctime,
+        );
     }
 
     /**
@@ -85,7 +110,7 @@ final readonly class SourceFileFinder
                         continue;
                     }
 
-                    $path = $directory.DIRECTORY_SEPARATOR.$entry;
+                    $path = $directory . DIRECTORY_SEPARATOR . $entry;
 
                     if (is_link($path)) {
                         continue;
@@ -115,30 +140,21 @@ final readonly class SourceFileFinder
         return $files;
     }
 
-    /** @param array<string, string> $files */
-    private function addFile(array &$files, string $path, string $base, SecretPolicy $secrets): void
+    private function excluded(string $path): bool
     {
-        $relative = $this->relative($path, $base);
+        $normalized = strtolower(trim(str_replace('\\', '/', $path), '/'));
+        $segments = explode('/', $normalized);
 
-        if (
-            $relative === null
-            || $this->excluded($relative)
-            || $secrets->denied($relative)
-            || strtolower(pathinfo($relative, PATHINFO_EXTENSION)) !== 'php'
-        ) {
-            return;
+        if (array_intersect($segments, self::EXCLUDED_SEGMENTS) !== []) {
+            return true;
         }
 
-        $size = filesize($path);
-        $mtime = filemtime($path);
-        $ctime = filectime($path);
-
-        $files[$relative] = sprintf(
-            '%d:%d:%d',
-            $size === false ? -1 : $size,
-            $mtime === false ? -1 : $mtime,
-            $ctime === false ? -1 : $ctime,
-        );
+        return $normalized === 'storage'
+            || str_starts_with($normalized, 'storage/')
+            || $normalized === 'bootstrap/cache'
+            || str_starts_with($normalized, 'bootstrap/cache/')
+            || $normalized === 'public/build'
+            || str_starts_with($normalized, 'public/build/');
     }
 
     /** @return list<string> */
@@ -191,23 +207,6 @@ final readonly class SourceFileFinder
         return $roots;
     }
 
-    private function excluded(string $path): bool
-    {
-        $normalized = strtolower(trim(str_replace('\\', '/', $path), '/'));
-        $segments = explode('/', $normalized);
-
-        if (array_intersect($segments, self::EXCLUDED_SEGMENTS) !== []) {
-            return true;
-        }
-
-        return $normalized === 'storage'
-            || str_starts_with($normalized, 'storage/')
-            || $normalized === 'bootstrap/cache'
-            || str_starts_with($normalized, 'bootstrap/cache/')
-            || $normalized === 'public/build'
-            || str_starts_with($normalized, 'public/build/');
-    }
-
     private function relative(string $path, string $base): ?string
     {
         $normalizedPath = str_replace('\\', '/', rtrim($path, '/\\'));
@@ -219,7 +218,7 @@ final readonly class SourceFileFinder
             return '.';
         }
 
-        if (!str_starts_with($comparisonPath, $comparisonBase.'/')) {
+        if (!str_starts_with($comparisonPath, $comparisonBase . '/')) {
             return null;
         }
 

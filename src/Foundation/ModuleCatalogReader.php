@@ -40,10 +40,15 @@ use Throwable;
  */
 final class ModuleCatalogReader
 {
-    private const int MAX_SOURCE_BYTES = 1_048_576;
-    private const string MODULE_PATTERN = '~^[a-z][a-z0-9_-]*$~D';
-    private const string PACKAGE_PATTERN = '~^[a-z0-9_.-]+/[a-z0-9_.-]+$~D';
     private const string CONFIG_PATTERN = '~^[A-Za-z0-9_.-]+\.php$~D';
+
+    private const int MAX_SOURCE_BYTES = 1_048_576;
+
+    private const string MODULE_PATTERN = '~^[a-z][a-z0-9_-]*$~D';
+
+    private const string PACKAGE_PATTERN = '~^[a-z0-9_.-]+/[a-z0-9_.-]+$~D';
+
+    private readonly Parser $parser;
 
     /** @var array<string, ModuleDefinition>|null */
     private ?array $definitions = null;
@@ -51,14 +56,12 @@ final class ModuleCatalogReader
     /** @var array<string, ModuleIntelligence>|null */
     private ?array $modules = null;
 
-    private readonly Parser $parser;
-
     public function __construct(
         private readonly Project $project,
         private readonly ComposerInspector $composer,
         ?Parser $parser = null,
     ) {
-        $this->parser = $parser ?? (new ParserFactory())->createForNewestSupportedVersion();
+        $this->parser = $parser ?? new ParserFactory()->createForNewestSupportedVersion();
     }
 
     /** @return array<string, ModuleDefinition> */
@@ -73,7 +76,7 @@ final class ModuleCatalogReader
         try {
             $nodes = $this->parser->parse($source);
         } catch (Throwable $exception) {
-            throw new RuntimeException('Unable to parse installed Foundation ModuleCatalog: '.$exception->getMessage(), 0, $exception);
+            throw new RuntimeException('Unable to parse installed Foundation ModuleCatalog: ' . $exception->getMessage(), 0, $exception);
         }
 
         if (!is_array($nodes)) {
@@ -113,7 +116,7 @@ final class ModuleCatalogReader
             $missingConfig = [];
 
             foreach ($definition['config'] as $config) {
-                if (is_file($this->project->root.DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.$config)) {
+                if (is_file($this->project->root . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . $config)) {
                     $presentConfig[] = $config;
                 } else {
                     $missingConfig[] = $config;
@@ -186,7 +189,7 @@ final class ModuleCatalogReader
             throw new RuntimeException('Installed Foundation package root is unavailable.');
         }
 
-        $path = realpath($root.DIRECTORY_SEPARATOR.'src'.DIRECTORY_SEPARATOR.'Module'.DIRECTORY_SEPARATOR.'ModuleCatalog.php');
+        $path = realpath($root . DIRECTORY_SEPARATOR . 'src' . DIRECTORY_SEPARATOR . 'Module' . DIRECTORY_SEPARATOR . 'ModuleCatalog.php');
 
         if ($path === false || !is_file($path)) {
             throw new RuntimeException('Installed Foundation ModuleCatalog.php is unavailable.');
@@ -197,39 +200,6 @@ final class ModuleCatalogReader
         }
 
         return $path;
-    }
-
-    private function readSource(string $path): string
-    {
-        $size = filesize($path);
-
-        if ($size !== false && $size > self::MAX_SOURCE_BYTES) {
-            throw new RuntimeException('Installed Foundation ModuleCatalog.php exceeds the 1 MiB safety limit.');
-        }
-
-        $source = file_get_contents($path);
-
-        if ($source === false) {
-            throw new RuntimeException('Unable to read installed Foundation ModuleCatalog.php.');
-        }
-
-        if (strlen($source) > self::MAX_SOURCE_BYTES) {
-            throw new RuntimeException('Installed Foundation ModuleCatalog.php exceeds the 1 MiB safety limit.');
-        }
-
-        return $source;
-    }
-
-    /** @param list<Node> $nodes */
-    private function moduleExpression(array $nodes): Expr
-    {
-        $expression = $this->findModuleExpression($nodes);
-
-        if ($expression !== null) {
-            return $expression;
-        }
-
-        throw new RuntimeException('Installed Foundation ModuleCatalog::MODULES constant was not found.');
     }
 
     /** @param list<Node> $nodes */
@@ -264,6 +234,18 @@ final class ModuleCatalogReader
         }
 
         return null;
+    }
+
+    private function inside(string $path, string $root): bool
+    {
+        $root = rtrim($root, '\\/');
+        $prefix = $root . DIRECTORY_SEPARATOR;
+
+        if (DIRECTORY_SEPARATOR === '\\') {
+            return strcasecmp($path, $root) === 0 || strncasecmp($path, $prefix, strlen($prefix)) === 0;
+        }
+
+        return $path === $root || str_starts_with($path, $prefix);
     }
 
     private function literal(Expr $expression): mixed
@@ -313,7 +295,7 @@ final class ModuleCatalogReader
         return $result;
     }
 
-    private function literalConstant(Expr\ConstFetch $constant): bool|null
+    private function literalConstant(Expr\ConstFetch $constant): ?bool
     {
         return match (strtolower($constant->name->toString())) {
             'true' => true,
@@ -326,15 +308,16 @@ final class ModuleCatalogReader
         };
     }
 
-    private function numericLiteral(Expr $expression): int|float
+    /** @param list<Node> $nodes */
+    private function moduleExpression(array $nodes): Expr
     {
-        $value = $this->literal($expression);
+        $expression = $this->findModuleExpression($nodes);
 
-        if (!is_int($value) && !is_float($value)) {
-            throw new RuntimeException('Installed Foundation ModuleCatalog contains a non-numeric unary expression.');
+        if ($expression !== null) {
+            return $expression;
         }
 
-        return $value;
+        throw new RuntimeException('Installed Foundation ModuleCatalog::MODULES constant was not found.');
     }
 
     /** @return array<string, ModuleDefinition> */
@@ -391,31 +374,36 @@ final class ModuleCatalogReader
         return $normalized;
     }
 
-    /** @return array<string, string> */
-    private function stringMap(mixed $value, string $field, string $keyPattern): array
+    private function numericLiteral(Expr $expression): int|float
     {
-        if (!is_array($value)) {
-            throw new RuntimeException(sprintf('Installed Foundation ModuleCatalog field "%s" must be an array.', $field));
+        $value = $this->literal($expression);
+
+        if (!is_int($value) && !is_float($value)) {
+            throw new RuntimeException('Installed Foundation ModuleCatalog contains a non-numeric unary expression.');
         }
 
-        $result = [];
+        return $value;
+    }
 
-        foreach ($value as $key => $item) {
-            if (
-                !is_string($key)
-                || preg_match($keyPattern, $key) !== 1
-                || !is_string($item)
-                || trim($item) === ''
-            ) {
-                throw new RuntimeException(sprintf('Installed Foundation ModuleCatalog field "%s" is invalid.', $field));
-            }
+    private function readSource(string $path): string
+    {
+        $size = filesize($path);
 
-            $result[strtolower($key)] = $item;
+        if ($size !== false && $size > self::MAX_SOURCE_BYTES) {
+            throw new RuntimeException('Installed Foundation ModuleCatalog.php exceeds the 1 MiB safety limit.');
         }
 
-        ksort($result, SORT_STRING);
+        $source = file_get_contents($path);
 
-        return $result;
+        if ($source === false) {
+            throw new RuntimeException('Unable to read installed Foundation ModuleCatalog.php.');
+        }
+
+        if (strlen($source) > self::MAX_SOURCE_BYTES) {
+            throw new RuntimeException('Installed Foundation ModuleCatalog.php exceeds the 1 MiB safety limit.');
+        }
+
+        return $source;
     }
 
     /** @return list<string> */
@@ -446,15 +434,30 @@ final class ModuleCatalogReader
         return array_values(array_unique($result));
     }
 
-    private function inside(string $path, string $root): bool
+    /** @return array<string, string> */
+    private function stringMap(mixed $value, string $field, string $keyPattern): array
     {
-        $root = rtrim($root, "\\/");
-        $prefix = $root.DIRECTORY_SEPARATOR;
-
-        if (DIRECTORY_SEPARATOR === '\\') {
-            return strcasecmp($path, $root) === 0 || strncasecmp($path, $prefix, strlen($prefix)) === 0;
+        if (!is_array($value)) {
+            throw new RuntimeException(sprintf('Installed Foundation ModuleCatalog field "%s" must be an array.', $field));
         }
 
-        return $path === $root || strncmp($path, $prefix, strlen($prefix)) === 0;
+        $result = [];
+
+        foreach ($value as $key => $item) {
+            if (
+                !is_string($key)
+                || preg_match($keyPattern, $key) !== 1
+                || !is_string($item)
+                || trim($item) === ''
+            ) {
+                throw new RuntimeException(sprintf('Installed Foundation ModuleCatalog field "%s" is invalid.', $field));
+            }
+
+            $result[strtolower($key)] = $item;
+        }
+
+        ksort($result, SORT_STRING);
+
+        return $result;
     }
 }

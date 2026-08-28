@@ -51,6 +51,26 @@ final readonly class ResourceRouteExpander
         return $this->expandResolved($expr, $scope, $conditional, $origin, $source, $name, $prefix, $controller, $options);
     }
 
+    /** @param Scope $scope @return RouteEntry */
+    private function dynamic(Node\Expr $expr, array $scope, bool $conditional, string $origin, string $source): array
+    {
+        return [
+            'method' => 'RESOURCE',
+            'path' => null,
+            'name' => null,
+            'handler' => null,
+            'middleware' => $scope['middleware'],
+            'aliases' => [],
+            'options' => ['resource_registration' => true],
+            'origin' => $origin,
+            'source' => $source,
+            'line' => $expr->getStartLine(),
+            'status' => 'dynamic',
+            'conditional' => $conditional,
+            'dynamic_fields' => $this->values->uniqueStrings([...$scope['dynamic'], 'resource']),
+        ];
+    }
+
     /**
      * @param Scope $scope
      * @param array<string,mixed> $options
@@ -111,6 +131,13 @@ final readonly class ResourceRouteExpander
         return ['routes' => $routes, 'diagnostics' => []];
     }
 
+    /** @param list<string>|null $only @param list<string>|null $except */
+    private function include(string $key, ?array $only, ?array $except): bool
+    {
+        return ($only === null || in_array($key, $only, true))
+            && ($except === null || !in_array($key, $except, true));
+    }
+
     /**
      * @param array{method:string,suffix:string,action:string,key:string,nameable:bool} $row
      * @param Scope $scope
@@ -134,12 +161,12 @@ final readonly class ResourceRouteExpander
         $dynamic = $scope['dynamic'];
         $path = $scope['prefix'] === null
             ? null
-            : $this->values->joinPath($scope['prefix'], rtrim($prefix, '/').$row['suffix']);
+            : $this->values->joinPath($scope['prefix'], rtrim($prefix, '/') . $row['suffix']);
         $path === null && $dynamic[] = 'path';
 
-        $routeName = $row['nameable'] ? ($names[$row['key']] ?? $name.'.'.$row['key']) : null;
+        $routeName = $row['nameable'] ? ($names[$row['key']] ?? $name . '.' . $row['key']) : null;
         if ($routeName !== null && $scope['name_prefix'] !== null) {
-            $routeName = $scope['name_prefix'].$routeName;
+            $routeName = $scope['name_prefix'] . $routeName;
         } elseif ($routeName !== null) {
             $routeName = null;
             $dynamic[] = 'name';
@@ -151,7 +178,7 @@ final readonly class ResourceRouteExpander
             'method' => $row['method'],
             'path' => $path,
             'name' => $routeName,
-            'handler' => $controller.'::'.$row['action'],
+            'handler' => $controller . '::' . $row['action'],
             'middleware' => array_values(array_unique([...$scope['middleware'], ...$middleware])),
             'aliases' => [],
             'options' => ['resource' => $name, 'resource_key' => $row['key']],
@@ -162,32 +189,5 @@ final readonly class ResourceRouteExpander
             'conditional' => $conditional,
             'dynamic_fields' => $dynamic,
         ];
-    }
-
-    /** @param Scope $scope @return RouteEntry */
-    private function dynamic(Node\Expr $expr, array $scope, bool $conditional, string $origin, string $source): array
-    {
-        return [
-            'method' => 'RESOURCE',
-            'path' => null,
-            'name' => null,
-            'handler' => null,
-            'middleware' => $scope['middleware'],
-            'aliases' => [],
-            'options' => ['resource_registration' => true],
-            'origin' => $origin,
-            'source' => $source,
-            'line' => $expr->getStartLine(),
-            'status' => 'dynamic',
-            'conditional' => $conditional,
-            'dynamic_fields' => $this->values->uniqueStrings([...$scope['dynamic'], 'resource']),
-        ];
-    }
-
-    /** @param list<string>|null $only @param list<string>|null $except */
-    private function include(string $key, ?array $only, ?array $except): bool
-    {
-        return ($only === null || in_array($key, $only, true))
-            && ($except === null || !in_array($key, $except, true));
     }
 }

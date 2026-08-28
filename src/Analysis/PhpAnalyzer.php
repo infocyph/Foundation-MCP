@@ -22,9 +22,11 @@ final class PhpAnalyzer
 {
     private const int MAX_SOURCE_BYTES = 2_097_152;
 
-    private readonly PathPolicy $projectPaths;
-    private readonly SecretPolicy $secrets;
     private readonly Parser $parser;
+
+    private readonly PathPolicy $projectPaths;
+
+    private readonly SecretPolicy $secrets;
 
     /** @var array<string, AnalyzedFile> */
     private array $cache = [];
@@ -36,13 +38,7 @@ final class PhpAnalyzer
     ) {
         $this->projectPaths = new PathPolicy($project->root);
         $this->secrets = new SecretPolicy();
-        $this->parser = $parser ?? (new ParserFactory())->createForNewestSupportedVersion();
-    }
-
-    public function project(string $path): AnalyzedFile
-    {
-        $path = $this->allowedPath($path);
-        return $this->analyze($this->read($this->projectPaths->projectFile($path)), 'project', null, $path, 'project-file:'.$path);
+        $this->parser = $parser ?? new ParserFactory()->createForNewestSupportedVersion();
     }
 
     public function package(string $package, string $path): AnalyzedFile
@@ -53,7 +49,15 @@ final class PhpAnalyzer
             throw new RuntimeException('Package is not installed with an approved source root.');
         }
         $paths = new PathPolicy($this->project->root, $roots);
-        return $this->analyze($this->read($paths->packageFile($package, $path)), 'package', $package, $path, 'package-file:'.$package.':'.$path);
+
+        return $this->analyze($this->read($paths->packageFile($package, $path)), 'package', $package, $path, 'package-file:' . $package . ':' . $path);
+    }
+
+    public function project(string $path): AnalyzedFile
+    {
+        $path = $this->allowedPath($path);
+
+        return $this->analyze($this->read($this->projectPaths->projectFile($path)), 'project', null, $path, 'project-file:' . $path);
     }
 
     /**
@@ -64,7 +68,18 @@ final class PhpAnalyzer
     {
         $path = $this->allowedPath($path);
         $this->assertSource($source);
-        return $this->analyze($source, $scope, $package, $path, 'text:'.$scope.':'.($package ?? '').':'.$path);
+
+        return $this->analyze($source, $scope, $package, $path, 'text:' . $scope . ':' . ($package ?? '') . ':' . $path);
+    }
+
+    private function allowedPath(string $path): string
+    {
+        $this->secrets->assertAllowed($path);
+        if (strtolower(pathinfo(str_replace('\\', '/', $path), PATHINFO_EXTENSION)) !== 'php') {
+            throw new RuntimeException('PHP analysis accepts only .php source files.');
+        }
+
+        return $path;
     }
 
     private function analyze(string $source, string $scope, ?string $package, string $path, string $cacheIdentity): AnalyzedFile
@@ -118,6 +133,16 @@ final class PhpAnalyzer
         );
     }
 
+    private function assertSource(string $source): void
+    {
+        if (strlen($source) > self::MAX_SOURCE_BYTES) {
+            throw new RuntimeException('PHP source exceeds the 2 MiB analysis limit.');
+        }
+        if (str_contains($source, "\0")) {
+            throw new RuntimeException('Binary PHP source is not supported.');
+        }
+    }
+
     private function parseFailure(
         string $scope,
         ?string $package,
@@ -156,26 +181,8 @@ final class PhpAnalyzer
             throw new RuntimeException('Unable to read PHP source.');
         }
         $this->assertSource($source);
+
         return $source;
-    }
-
-    private function assertSource(string $source): void
-    {
-        if (strlen($source) > self::MAX_SOURCE_BYTES) {
-            throw new RuntimeException('PHP source exceeds the 2 MiB analysis limit.');
-        }
-        if (str_contains($source, "\0")) {
-            throw new RuntimeException('Binary PHP source is not supported.');
-        }
-    }
-
-    private function allowedPath(string $path): string
-    {
-        $this->secrets->assertAllowed($path);
-        if (strtolower(pathinfo(str_replace('\\', '/', $path), PATHINFO_EXTENSION)) !== 'php') {
-            throw new RuntimeException('PHP analysis accepts only .php source files.');
-        }
-        return $path;
     }
 
     private function relative(string $path): string
@@ -188,6 +195,7 @@ final class PhpAnalyzer
             }
             $parts[] = $part;
         }
+
         return implode('/', $parts);
     }
 }

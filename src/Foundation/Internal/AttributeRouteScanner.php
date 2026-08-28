@@ -18,8 +18,7 @@ final readonly class AttributeRouteScanner
     public function __construct(
         private RouteValueResolver $values,
         private array $verbs,
-    ) {
-    }
+    ) {}
 
     /**
      * @param list<Node\Stmt> $nodes
@@ -31,173 +30,6 @@ final readonly class AttributeRouteScanner
         $this->scanNodes($nodes, $source, $conditional, $routes);
 
         return $routes;
-    }
-
-    /**
-     * @param list<Node\Stmt> $nodes
-     * @param list<RouteEntry> $routes
-     */
-    private function scanNodes(array $nodes, string $source, bool $conditional, array &$routes): void
-    {
-        foreach ($nodes as $node) {
-            if ($node instanceof Node\Stmt\Namespace_) {
-                $this->scanNodes($node->stmts, $source, $conditional, $routes);
-                continue;
-            }
-            if (!$node instanceof Node\Stmt\Class_ || $node->isAbstract()) {
-                continue;
-            }
-
-            array_push($routes, ...$this->scanClass($node, $source, $conditional));
-        }
-    }
-
-    /** @return list<RouteEntry> */
-    private function scanClass(Node\Stmt\Class_ $class, string $source, bool $conditional): array
-    {
-        $className = $class->namespacedName?->toString() ?? $class->name?->toString();
-        if ($className === null) {
-            return [];
-        }
-
-        [$prefix, $domain, $classMiddleware, $namePrefix, $classDynamic] = $this->classContext($class);
-        $routes = [];
-
-        foreach ($class->getMethods() as $method) {
-            if (!$method->isPublic()) {
-                continue;
-            }
-
-            [$methodMiddleware, $methodMiddlewareDynamic] = $this->middlewareAttributes($method->attrGroups);
-            $methodDynamic = $methodMiddlewareDynamic ? [...$classDynamic, 'middleware'] : $classDynamic;
-            foreach ($this->routeAttributes($method->attrGroups) as $attribute) {
-                array_push($routes, ...$this->attributeRoutes(
-                    $attribute,
-                    $className,
-                    $method->name->toString(),
-                    $prefix,
-                    $namePrefix,
-                    $domain,
-                    [...$classMiddleware, ...$methodMiddleware],
-                    $methodDynamic,
-                    $conditional,
-                    $source,
-                ));
-            }
-        }
-
-        return $routes;
-    }
-
-    /**
-     * @return array{0:?string,1:?string,2:list<string>,3:?string,4:list<string>}
-     */
-    private function classContext(Node\Stmt\Class_ $class): array
-    {
-        [$classMiddleware, $classMiddlewareDynamic] = $this->middlewareAttributes($class->attrGroups);
-        $group = $this->firstAttribute($class->attrGroups, 'Infocyph\\Webrick\\Router\\Definition\\Attribute\\Group');
-        if (!$group instanceof Node\Attribute) {
-            return ['', null, $classMiddleware, '', $classMiddlewareDynamic ? ['middleware'] : []];
-        }
-
-        [$prefix, $domain, $groupMiddleware, $name, $groupDynamic] = $this->groupContext($group);
-        $dynamic = $classMiddlewareDynamic ? [...$groupDynamic, 'middleware'] : $groupDynamic;
-
-        return [
-            $prefix,
-            $domain,
-            array_values(array_unique([...$groupMiddleware, ...$classMiddleware])),
-            $name,
-            $this->values->uniqueStrings($dynamic),
-        ];
-    }
-
-    /**
-     * @return array{0:?string,1:?string,2:list<string>,3:?string,4:list<string>}
-     */
-    private function groupContext(Node\Attribute $attribute): array
-    {
-        $args = $this->values->attributeArgs($attribute);
-        $prefixExpr = $this->values->arg($args, 0, 'prefix');
-        $domainExpr = $this->values->arg($args, 1, 'domain');
-        $middlewareExpr = $this->values->arg($args, 2, 'middleware');
-        $nameExpr = $this->values->arg($args, 3, 'name');
-        $prefix = $prefixExpr instanceof Node\Expr ? $this->values->nullableStringExpr($prefixExpr) : '';
-        $domain = $domainExpr instanceof Node\Expr ? $this->values->nullableStringExpr($domainExpr) : null;
-        $name = $nameExpr instanceof Node\Expr ? $this->values->nullableStringExpr($nameExpr) : '';
-        $middleware = $middlewareExpr instanceof Node\Expr ? $this->values->middlewareValue($middlewareExpr) : [];
-        $dynamic = [];
-
-        $prefixExpr instanceof Node\Expr && $prefix === null && $dynamic[] = 'path';
-        $nameExpr instanceof Node\Expr && $name === null && $dynamic[] = 'name';
-        $middleware === null && $dynamic[] = 'middleware';
-        if ($domainExpr instanceof Node\Expr && !$this->nullLiteral($domainExpr) && $domain === null) {
-            $dynamic[] = 'domain';
-        }
-
-        return [$prefix, $domain, $middleware ?? [], $name, $dynamic];
-    }
-
-    /**
-     * @param list<Node\AttributeGroup> $groups
-     */
-    private function firstAttribute(array $groups, string $name): ?Node\Attribute
-    {
-        foreach ($groups as $group) {
-            foreach ($group->attrs as $attribute) {
-                if ($this->values->attributeName($attribute) === $name) {
-                    return $attribute;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * @param list<Node\AttributeGroup> $groups
-     * @return list<Node\Attribute>
-     */
-    private function routeAttributes(array $groups): array
-    {
-        $routes = [];
-        foreach ($groups as $group) {
-            foreach ($group->attrs as $attribute) {
-                if ($this->values->attributeName($attribute) === 'Infocyph\\Webrick\\Router\\Definition\\Attribute\\Route') {
-                    $routes[] = $attribute;
-                }
-            }
-        }
-
-        return $routes;
-    }
-
-    /**
-     * @param list<Node\AttributeGroup> $groups
-     * @return array{0:list<string>,1:bool}
-     */
-    private function middlewareAttributes(array $groups): array
-    {
-        $middleware = [];
-        $dynamic = false;
-        foreach ($groups as $group) {
-            foreach ($group->attrs as $attribute) {
-                if ($this->values->attributeName($attribute) !== 'Infocyph\\Webrick\\Router\\Definition\\Attribute\\Middleware') {
-                    continue;
-                }
-
-                $args = $this->values->attributeArgs($attribute);
-                $value = $this->values->arg($args, 0, 'stack');
-                $resolved = $value instanceof Node\Expr ? $this->values->middlewareValue($value) : null;
-                if ($resolved === null) {
-                    $dynamic = true;
-                    continue;
-                }
-                array_push($middleware, ...$resolved);
-            }
-        }
-
-        return [array_values(array_unique($middleware)), $dynamic];
     }
 
     /**
@@ -242,7 +74,7 @@ final readonly class AttributeRouteScanner
         }
 
         $fullPath = $path !== null && $prefix !== null ? $this->values->joinPath($prefix, $path) : null;
-        $fullName = $name !== null && $namePrefix !== null ? $namePrefix.$name : $name;
+        $fullName = $name !== null && $namePrefix !== null ? $namePrefix . $name : $name;
         $options = ['attribute' => true];
         if ($declaredRouteMiddleware !== [] && $declaredRouteMiddleware !== null) {
             // Current Webrick AttributeRouteLoader does not apply Route::$middleware;
@@ -260,7 +92,7 @@ final readonly class AttributeRouteScanner
             $methods,
             $fullPath,
             $fullName,
-            $class.'::'.$method,
+            $class . '::' . $method,
             array_values(array_unique($middleware)),
             $options,
             $dynamic,
@@ -270,10 +102,27 @@ final readonly class AttributeRouteScanner
         );
     }
 
-
-    private function nullLiteral(Node\Expr $expr): bool
+    /**
+     * @return array{0:?string,1:?string,2:list<string>,3:?string,4:list<string>}
+     */
+    private function classContext(Node\Stmt\Class_ $class): array
     {
-        return $expr instanceof Node\Expr\ConstFetch && strtolower($expr->name->toString()) === 'null';
+        [$classMiddleware, $classMiddlewareDynamic] = $this->middlewareAttributes($class->attrGroups);
+        $group = $this->firstAttribute($class->attrGroups, 'Infocyph\\Webrick\\Router\\Definition\\Attribute\\Group');
+        if (!$group instanceof Node\Attribute) {
+            return ['', null, $classMiddleware, '', $classMiddlewareDynamic ? ['middleware'] : []];
+        }
+
+        [$prefix, $domain, $groupMiddleware, $name, $groupDynamic] = $this->groupContext($group);
+        $dynamic = $classMiddlewareDynamic ? [...$groupDynamic, 'middleware'] : $groupDynamic;
+
+        return [
+            $prefix,
+            $domain,
+            array_values(array_unique([...$groupMiddleware, ...$classMiddleware])),
+            $name,
+            $this->values->uniqueStrings($dynamic),
+        ];
     }
 
     /**
@@ -322,5 +171,156 @@ final readonly class AttributeRouteScanner
         }
 
         return $routes;
+    }
+
+    /**
+     * @param list<Node\AttributeGroup> $groups
+     */
+    private function firstAttribute(array $groups, string $name): ?Node\Attribute
+    {
+        foreach ($groups as $group) {
+            foreach ($group->attrs as $attribute) {
+                if ($this->values->attributeName($attribute) === $name) {
+                    return $attribute;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array{0:?string,1:?string,2:list<string>,3:?string,4:list<string>}
+     */
+    private function groupContext(Node\Attribute $attribute): array
+    {
+        $args = $this->values->attributeArgs($attribute);
+        $prefixExpr = $this->values->arg($args, 0, 'prefix');
+        $domainExpr = $this->values->arg($args, 1, 'domain');
+        $middlewareExpr = $this->values->arg($args, 2, 'middleware');
+        $nameExpr = $this->values->arg($args, 3, 'name');
+        $prefix = $prefixExpr instanceof Node\Expr ? $this->values->nullableStringExpr($prefixExpr) : '';
+        $domain = $domainExpr instanceof Node\Expr ? $this->values->nullableStringExpr($domainExpr) : null;
+        $name = $nameExpr instanceof Node\Expr ? $this->values->nullableStringExpr($nameExpr) : '';
+        $middleware = $middlewareExpr instanceof Node\Expr ? $this->values->middlewareValue($middlewareExpr) : [];
+        $dynamic = [];
+
+        $prefixExpr instanceof Node\Expr && $prefix === null && $dynamic[] = 'path';
+        $nameExpr instanceof Node\Expr && $name === null && $dynamic[] = 'name';
+        $middleware === null && $dynamic[] = 'middleware';
+        if ($domainExpr instanceof Node\Expr && !$this->nullLiteral($domainExpr) && $domain === null) {
+            $dynamic[] = 'domain';
+        }
+
+        return [$prefix, $domain, $middleware ?? [], $name, $dynamic];
+    }
+
+    /**
+     * @param list<Node\AttributeGroup> $groups
+     * @return array{0:list<string>,1:bool}
+     */
+    private function middlewareAttributes(array $groups): array
+    {
+        $middleware = [];
+        $dynamic = false;
+        foreach ($groups as $group) {
+            foreach ($group->attrs as $attribute) {
+                if ($this->values->attributeName($attribute) !== 'Infocyph\\Webrick\\Router\\Definition\\Attribute\\Middleware') {
+                    continue;
+                }
+
+                $args = $this->values->attributeArgs($attribute);
+                $value = $this->values->arg($args, 0, 'stack');
+                $resolved = $value instanceof Node\Expr ? $this->values->middlewareValue($value) : null;
+                if ($resolved === null) {
+                    $dynamic = true;
+
+                    continue;
+                }
+                array_push($middleware, ...$resolved);
+            }
+        }
+
+        return [array_values(array_unique($middleware)), $dynamic];
+    }
+
+    private function nullLiteral(Node\Expr $expr): bool
+    {
+        return $expr instanceof Node\Expr\ConstFetch && strtolower($expr->name->toString()) === 'null';
+    }
+
+    /**
+     * @param list<Node\AttributeGroup> $groups
+     * @return list<Node\Attribute>
+     */
+    private function routeAttributes(array $groups): array
+    {
+        $routes = [];
+        foreach ($groups as $group) {
+            foreach ($group->attrs as $attribute) {
+                if ($this->values->attributeName($attribute) === 'Infocyph\\Webrick\\Router\\Definition\\Attribute\\Route') {
+                    $routes[] = $attribute;
+                }
+            }
+        }
+
+        return $routes;
+    }
+
+    /** @return list<RouteEntry> */
+    private function scanClass(Node\Stmt\Class_ $class, string $source, bool $conditional): array
+    {
+        $className = $class->namespacedName?->toString() ?? $class->name?->toString();
+        if ($className === null) {
+            return [];
+        }
+
+        [$prefix, $domain, $classMiddleware, $namePrefix, $classDynamic] = $this->classContext($class);
+        $routes = [];
+
+        foreach ($class->getMethods() as $method) {
+            if (!$method->isPublic()) {
+                continue;
+            }
+
+            [$methodMiddleware, $methodMiddlewareDynamic] = $this->middlewareAttributes($method->attrGroups);
+            $methodDynamic = $methodMiddlewareDynamic ? [...$classDynamic, 'middleware'] : $classDynamic;
+            foreach ($this->routeAttributes($method->attrGroups) as $attribute) {
+                array_push($routes, ...$this->attributeRoutes(
+                    $attribute,
+                    $className,
+                    $method->name->toString(),
+                    $prefix,
+                    $namePrefix,
+                    $domain,
+                    [...$classMiddleware, ...$methodMiddleware],
+                    $methodDynamic,
+                    $conditional,
+                    $source,
+                ));
+            }
+        }
+
+        return $routes;
+    }
+
+    /**
+     * @param list<Node\Stmt> $nodes
+     * @param list<RouteEntry> $routes
+     */
+    private function scanNodes(array $nodes, string $source, bool $conditional, array &$routes): void
+    {
+        foreach ($nodes as $node) {
+            if ($node instanceof Node\Stmt\Namespace_) {
+                $this->scanNodes($node->stmts, $source, $conditional, $routes);
+
+                continue;
+            }
+            if (!$node instanceof Node\Stmt\Class_ || $node->isAbstract()) {
+                continue;
+            }
+
+            array_push($routes, ...$this->scanClass($node, $source, $conditional));
+        }
     }
 }

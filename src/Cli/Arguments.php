@@ -15,8 +15,7 @@ final readonly class Arguments
         public bool $gitEnabled,
         public bool $help,
         public bool $version,
-    ) {
-    }
+    ) {}
 
     /**
      * @param list<string> $argv
@@ -78,11 +77,11 @@ final readonly class Arguments
             }
 
             if (str_starts_with($argument, '-')) {
-                throw new InvalidArgumentException('Unknown option "'.$argument.'".');
+                throw new InvalidArgumentException('Unknown option "' . $argument . '".');
             }
 
             if ($command !== null) {
-                throw new InvalidArgumentException('Unexpected argument "'.$argument.'".');
+                throw new InvalidArgumentException('Unexpected argument "' . $argument . '".');
             }
 
             $command = $argument;

@@ -23,14 +23,20 @@ use RuntimeException;
 final readonly class TestLocator
 {
     private const int DEFAULT_RESULTS = 20;
-    private const int MAX_RESULTS = 100;
+
     private const int MAX_LEXICAL_FILE_BYTES = 262_144;
+
     private const int MAX_LEXICAL_SCAN_BYTES = 8_388_608;
 
-    private SymbolIndex $symbols;
-    private ReferenceIndex $references;
+    private const int MAX_RESULTS = 100;
+
     private SourceFileFinder $files;
+
     private PathPolicy $paths;
+
+    private ReferenceIndex $references;
+
+    private SymbolIndex $symbols;
 
     public function __construct(
         private Project $project,
@@ -51,6 +57,25 @@ final readonly class TestLocator
     }
 
     /** @return list<RelatedTest> */
+    public function forFile(string $path, int $limit = self::DEFAULT_RESULTS): array
+    {
+        $this->assertLimit($limit);
+        $resolved = $this->paths->projectFile($path);
+        $relative = $this->relative($resolved);
+
+        if ($relative === null) {
+            throw new RuntimeException('Source file is outside the project root.');
+        }
+
+        $targets = array_values(array_filter(
+            $this->symbols->project(),
+            static fn(array $entry): bool => $entry['path'] === $relative,
+        ));
+
+        return $this->locate($targets, [$relative], $limit);
+    }
+
+    /** @return list<RelatedTest> */
     public function forSymbol(string $symbol, int $limit = self::DEFAULT_RESULTS): array
     {
         $this->assertLimit($limit);
@@ -67,23 +92,180 @@ final readonly class TestLocator
         return $this->locate($targets, [$targets[0]['path']], $limit);
     }
 
-    /** @return list<RelatedTest> */
-    public function forFile(string $path, int $limit = self::DEFAULT_RESULTS): array
+    private function assertLimit(int $limit): void
     {
-        $this->assertLimit($limit);
-        $resolved = $this->paths->projectFile($path);
-        $relative = $this->relative($resolved);
+        if ($limit < 1 || $limit > self::MAX_RESULTS) {
+            throw new InvalidArgumentException('Related-test result limit must be between 1 and 100.');
+        }
+    }
 
-        if ($relative === null) {
-            throw new RuntimeException('Source file is outside the project root.');
+    private function classLike(string $kind): bool
+    {
+        return in_array($kind, ['class', 'interface', 'trait', 'enum'], true);
+    }
+
+    private function commonDirectorySuffix(string $left, string $right): int
+    {
+        $left = $this->directorySegments($left);
+        $right = $this->directorySegments($right);
+        $count = 0;
+
+        while ($left !== [] && $right !== [] && strtolower(end($left)) === strtolower(end($right))) {
+            ++$count;
+            array_pop($left);
+            array_pop($right);
         }
 
-        $targets = array_values(array_filter(
-            $this->symbols->project(),
-            static fn (array $entry): bool => $entry['path'] === $relative,
-        ));
+        return $count;
+    }
 
-        return $this->locate($targets, [$relative], $limit);
+    /** @return list<string> */
+    private function directorySegments(string $path): array
+    {
+        $directory = trim(str_replace('\\', '/', dirname($path)), './');
+
+        if ($directory === '') {
+            return [];
+        }
+
+        $segments = explode('/', $directory);
+        array_shift($segments);
+
+        return array_values(array_filter($segments, static fn(string $segment): bool => $segment !== ''));
+    }
+
+    /** @param array<string, TestCandidate> $candidates */
+    private function evidence(
+        array &$candidates,
+        string $path,
+        int $score,
+        string $confidence,
+        string $reason,
+    ): void {
+        $current = $candidates[$path] ?? [
+            'score' => 0,
+            'confidence' => 'lexical',
+            'reasons' => [],
+        ];
+        $current['reasons'][$reason] = true;
+
+        if ($score > $current['score']) {
+            $current['score'] = $score;
+            $current['confidence'] = $confidence;
+        }
+
+        $candidates[$path] = $current;
+    }
+
+    /**
+     * @param array<string, TestCandidate> $candidates
+     * @param list<array<string,mixed>> $targets
+     * @param list<string> $sourcePaths
+     * @param list<string> $testPaths
+     */
+    private function filenameEvidence(
+        array &$candidates,
+        array $targets,
+        array $sourcePaths,
+        array $testPaths,
+    ): void {
+        $names = [];
+
+        foreach ($targets as $target) {
+            $names[strtolower($target['name'])] = true;
+        }
+
+        foreach ($sourcePaths as $sourcePath) {
+            $names[strtolower(pathinfo($sourcePath, PATHINFO_FILENAME))] = true;
+        }
+
+        unset($names['']);
+
+        foreach ($testPaths as $testPath) {
+            $testStem = $this->testStem(pathinfo($testPath, PATHINFO_FILENAME));
+
+            foreach (array_keys($names) as $targetStem) {
+                if ($testStem === $targetStem) {
+                    $this->evidence($candidates, $testPath, 680, 'lexical', 'filename_convention');
+                } elseif (str_contains($testStem, $targetStem)) {
+                    $this->evidence($candidates, $testPath, 650, 'lexical', 'filename_similarity');
+                }
+            }
+        }
+    }
+
+    /** @param list<string> $prefixes */
+    private function isTestPath(string $path, array $prefixes): bool
+    {
+        $path = $this->normalize($path);
+
+        return array_any($prefixes, fn($prefix) => $path === $prefix || str_starts_with($path, $prefix . '/'));
+    }
+
+    /**
+     * @param array<string, TestCandidate> $candidates
+     * @param list<string> $targetSymbols
+     * @param list<string> $sourcePaths
+     * @param array<string,string> $testFiles
+     */
+    private function lexicalEvidence(
+        array &$candidates,
+        array $targetSymbols,
+        array $sourcePaths,
+        array $testFiles,
+    ): void {
+        $needles = [];
+
+        foreach ($targetSymbols as $symbol) {
+            $needles[$symbol] = true;
+            $needles[strtolower($this->shortName($symbol))] = true;
+        }
+
+        foreach ($sourcePaths as $path) {
+            $needles[strtolower(pathinfo($path, PATHINFO_FILENAME))] = true;
+        }
+
+        $needles = array_values(array_filter(
+            array_keys($needles),
+            static fn(string $needle): bool => strlen($needle) >= 3,
+        ));
+        $scanned = 0;
+
+        foreach ($testFiles as $path => $absolute) {
+            $size = filesize($absolute);
+
+            if ($size === false || $size > self::MAX_LEXICAL_FILE_BYTES || ($scanned + $size) > self::MAX_LEXICAL_SCAN_BYTES) {
+                continue;
+            }
+
+            $scanned += $size;
+            $content = file_get_contents($absolute);
+
+            if (
+                $content === false
+                || strlen($content) > self::MAX_LEXICAL_FILE_BYTES
+                || str_contains($content, "\0")
+                || preg_match('//u', $content) !== 1
+            ) {
+                continue;
+            }
+
+            $lower = strtolower($content);
+
+            foreach ($needles as $needle) {
+                if (str_contains($lower, $needle)) {
+                    $this->evidence(
+                        $candidates,
+                        $path,
+                        str_contains($needle, '\\') ? 540 : 500,
+                        'lexical',
+                        'lexical_fallback',
+                    );
+
+                    break;
+                }
+            }
+        }
     }
 
     /**
@@ -129,7 +311,7 @@ final readonly class TestLocator
             ];
         }
 
-        usort($results, static fn (array $left, array $right): int => [
+        usort($results, static fn(array $left, array $right): int => [
             -$left['score'],
             $left['path'],
         ] <=> [
@@ -138,6 +320,35 @@ final readonly class TestLocator
         ]);
 
         return array_slice($results, 0, $limit);
+    }
+
+    private function normalize(string $path): string
+    {
+        return trim(str_replace('\\', '/', $path), '/');
+    }
+
+    /**
+     * @param array<string, TestCandidate> $candidates
+     * @param list<string> $sourcePaths
+     * @param list<string> $testPaths
+     */
+    private function pathEvidence(array &$candidates, array $sourcePaths, array $testPaths): void
+    {
+        foreach ($testPaths as $testPath) {
+            foreach ($sourcePaths as $sourcePath) {
+                $common = $this->commonDirectorySuffix($sourcePath, $testPath);
+
+                if ($common > 0) {
+                    $this->evidence(
+                        $candidates,
+                        $testPath,
+                        $common >= 2 ? 760 : 730,
+                        'lexical',
+                        'path_relationship',
+                    );
+                }
+            }
+        }
     }
 
     /**
@@ -160,7 +371,7 @@ final readonly class TestLocator
 
             foreach ($targetMap as $target => $kind) {
                 $same = $referenceTarget === $target;
-                $member = $this->classLike($kind) && str_starts_with($referenceTarget, $target.'::');
+                $member = $this->classLike($kind) && str_starts_with($referenceTarget, $target . '::');
 
                 if (!$same && !$member) {
                     continue;
@@ -194,130 +405,33 @@ final readonly class TestLocator
         return [580, 'lexical', 'lexical_reference'];
     }
 
-    /**
-     * @param array<string, TestCandidate> $candidates
-     * @param list<string> $sourcePaths
-     * @param list<string> $testPaths
-     */
-    private function pathEvidence(array &$candidates, array $sourcePaths, array $testPaths): void
+    private function relative(string $path): ?string
     {
-        foreach ($testPaths as $testPath) {
-            foreach ($sourcePaths as $sourcePath) {
-                $common = $this->commonDirectorySuffix($sourcePath, $testPath);
+        $path = str_replace('\\', '/', rtrim($path, '/\\'));
+        $root = str_replace('\\', '/', rtrim($this->project->root, '/\\'));
+        $comparisonPath = PHP_OS_FAMILY === 'Windows' ? strtolower($path) : $path;
+        $comparisonRoot = PHP_OS_FAMILY === 'Windows' ? strtolower($root) : $root;
 
-                if ($common > 0) {
-                    $this->evidence(
-                        $candidates,
-                        $testPath,
-                        $common >= 2 ? 760 : 730,
-                        'lexical',
-                        'path_relationship',
-                    );
-                }
-            }
+        if ($comparisonPath === $comparisonRoot) {
+            return '.';
         }
+
+        if (!str_starts_with($comparisonPath, $comparisonRoot . '/')) {
+            return null;
+        }
+
+        return substr($path, strlen($root) + 1);
     }
 
-    /**
-     * @param array<string, TestCandidate> $candidates
-     * @param list<array<string,mixed>> $targets
-     * @param list<string> $sourcePaths
-     * @param list<string> $testPaths
-     */
-    private function filenameEvidence(
-        array &$candidates,
-        array $targets,
-        array $sourcePaths,
-        array $testPaths,
-    ): void {
-        $names = [];
-
-        foreach ($targets as $target) {
-            $names[strtolower($target['name'])] = true;
+    private function shortName(string $symbol): string
+    {
+        if (str_contains($symbol, '::')) {
+            return substr($symbol, strrpos($symbol, '::') + 2);
         }
 
-        foreach ($sourcePaths as $sourcePath) {
-            $names[strtolower(pathinfo($sourcePath, PATHINFO_FILENAME))] = true;
-        }
+        $position = strrpos($symbol, '\\');
 
-        unset($names['']);
-
-        foreach ($testPaths as $testPath) {
-            $testStem = $this->testStem(pathinfo($testPath, PATHINFO_FILENAME));
-
-            foreach (array_keys($names) as $targetStem) {
-                if ($testStem === $targetStem) {
-                    $this->evidence($candidates, $testPath, 680, 'lexical', 'filename_convention');
-                } elseif (str_contains($testStem, $targetStem)) {
-                    $this->evidence($candidates, $testPath, 650, 'lexical', 'filename_similarity');
-                }
-            }
-        }
-    }
-
-    /**
-     * @param array<string, TestCandidate> $candidates
-     * @param list<string> $targetSymbols
-     * @param list<string> $sourcePaths
-     * @param array<string,string> $testFiles
-     */
-    private function lexicalEvidence(
-        array &$candidates,
-        array $targetSymbols,
-        array $sourcePaths,
-        array $testFiles,
-    ): void {
-        $needles = [];
-
-        foreach ($targetSymbols as $symbol) {
-            $needles[$symbol] = true;
-            $needles[strtolower($this->shortName($symbol))] = true;
-        }
-
-        foreach ($sourcePaths as $path) {
-            $needles[strtolower(pathinfo($path, PATHINFO_FILENAME))] = true;
-        }
-
-        $needles = array_values(array_filter(
-            array_keys($needles),
-            static fn (string $needle): bool => strlen($needle) >= 3,
-        ));
-        $scanned = 0;
-
-        foreach ($testFiles as $path => $absolute) {
-            $size = filesize($absolute);
-
-            if ($size === false || $size > self::MAX_LEXICAL_FILE_BYTES || ($scanned + $size) > self::MAX_LEXICAL_SCAN_BYTES) {
-                continue;
-            }
-
-            $scanned += $size;
-            $content = file_get_contents($absolute);
-
-            if (
-                $content === false
-                || strlen($content) > self::MAX_LEXICAL_FILE_BYTES
-                || str_contains($content, "\0")
-                || preg_match('//u', $content) !== 1
-            ) {
-                continue;
-            }
-
-            $lower = strtolower($content);
-
-            foreach ($needles as $needle) {
-                if (str_contains($lower, $needle)) {
-                    $this->evidence(
-                        $candidates,
-                        $path,
-                        str_contains($needle, '\\') ? 540 : 500,
-                        'lexical',
-                        'lexical_fallback',
-                    );
-                    break;
-                }
-            }
-        }
+        return $position === false ? $symbol : substr($symbol, $position + 1);
     }
 
     /** @return array<string,string> relative path => absolute path */
@@ -356,7 +470,7 @@ final readonly class TestLocator
         }
 
         foreach (['tests', 'test', 'spec'] as $directory) {
-            if (is_dir($this->project->root.DIRECTORY_SEPARATOR.$directory)) {
+            if (is_dir($this->project->root . DIRECTORY_SEPARATOR . $directory)) {
                 $prefixes[] = $directory;
             }
         }
@@ -365,84 +479,6 @@ final readonly class TestLocator
         sort($prefixes, SORT_STRING);
 
         return $prefixes;
-    }
-
-    /** @param list<string> $prefixes */
-    private function isTestPath(string $path, array $prefixes): bool
-    {
-        $path = $this->normalize($path);
-
-        foreach ($prefixes as $prefix) {
-            if ($path === $prefix || str_starts_with($path, $prefix.'/')) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /** @param array<string, TestCandidate> $candidates */
-    private function evidence(
-        array &$candidates,
-        string $path,
-        int $score,
-        string $confidence,
-        string $reason,
-    ): void {
-        $current = $candidates[$path] ?? [
-            'score' => 0,
-            'confidence' => 'lexical',
-            'reasons' => [],
-        ];
-        $current['reasons'][$reason] = true;
-
-        if ($score > $current['score']) {
-            $current['score'] = $score;
-            $current['confidence'] = $confidence;
-        }
-
-        $candidates[$path] = $current;
-    }
-
-    private function commonDirectorySuffix(string $left, string $right): int
-    {
-        $left = $this->directorySegments($left);
-        $right = $this->directorySegments($right);
-        $count = 0;
-
-        while ($left !== [] && $right !== [] && strtolower((string) end($left)) === strtolower((string) end($right))) {
-            ++$count;
-            array_pop($left);
-            array_pop($right);
-        }
-
-        return $count;
-    }
-
-    /** @return list<string> */
-    private function directorySegments(string $path): array
-    {
-        $directory = trim(str_replace('\\', '/', dirname($path)), './');
-
-        if ($directory === '') {
-            return [];
-        }
-
-        $segments = explode('/', $directory);
-        array_shift($segments);
-
-        return array_values(array_filter($segments, static fn (string $segment): bool => $segment !== ''));
-    }
-
-    private function shortName(string $symbol): string
-    {
-        if (str_contains($symbol, '::')) {
-            return (string) substr($symbol, strrpos($symbol, '::') + 2);
-        }
-
-        $position = strrpos($symbol, '\\');
-
-        return $position === false ? $symbol : substr($symbol, $position + 1);
     }
 
     private function testStem(string $name): string
@@ -456,40 +492,5 @@ final readonly class TestLocator
         }
 
         return $name;
-    }
-
-    private function classLike(string $kind): bool
-    {
-        return in_array($kind, ['class', 'interface', 'trait', 'enum'], true);
-    }
-
-    private function assertLimit(int $limit): void
-    {
-        if ($limit < 1 || $limit > self::MAX_RESULTS) {
-            throw new InvalidArgumentException('Related-test result limit must be between 1 and 100.');
-        }
-    }
-
-    private function normalize(string $path): string
-    {
-        return trim(str_replace('\\', '/', $path), '/');
-    }
-
-    private function relative(string $path): ?string
-    {
-        $path = str_replace('\\', '/', rtrim($path, '/\\'));
-        $root = str_replace('\\', '/', rtrim($this->project->root, '/\\'));
-        $comparisonPath = PHP_OS_FAMILY === 'Windows' ? strtolower($path) : $path;
-        $comparisonRoot = PHP_OS_FAMILY === 'Windows' ? strtolower($root) : $root;
-
-        if ($comparisonPath === $comparisonRoot) {
-            return '.';
-        }
-
-        if (!str_starts_with($comparisonPath, $comparisonRoot.'/')) {
-            return null;
-        }
-
-        return substr($path, strlen($root) + 1);
     }
 }

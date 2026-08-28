@@ -6,8 +6,8 @@ namespace Infocyph\FoundationMcp\Mcp\Tool;
 
 final readonly class SymbolTool
 {
-    public const string NAME = 'foundation_symbol';
     public const string DESCRIPTION = 'Resolve a PHP symbol to its exact declaration, signature, source, ownership, and structural relationships in the project or one explicit installed package.';
+
     public const array INPUT_SCHEMA = [
         'type' => 'object',
         'properties' => [
@@ -18,10 +18,11 @@ final readonly class SymbolTool
         'additionalProperties' => false,
     ];
 
+    public const string NAME = 'foundation_symbol';
+
     public function __construct(
         private ToolServices $services,
-    ) {
-    }
+    ) {}
 
     /** @return array<string,mixed> */
     public function execute(string $symbol, ?string $package = null): array

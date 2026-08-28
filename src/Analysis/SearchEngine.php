@@ -26,12 +26,19 @@ use RuntimeException;
  */
 final readonly class SearchEngine
 {
-    private const int MAX_RESULTS = 100;
     private const int DEFAULT_RESULTS = 20;
-    private const int MAX_SCAN_FILES = 2_500;
-    private const int MAX_TEXT_FILE_BYTES = 524_288;
-    private const int MAX_TEXT_SCAN_BYTES = 16_777_216;
+
+    private const array KINDS = ['auto', 'symbol', 'path', 'text'];
+
     private const int MAX_EXCERPT_BYTES = 240;
+
+    private const int MAX_RESULTS = 100;
+
+    private const int MAX_SCAN_FILES = 2_500;
+
+    private const int MAX_TEXT_FILE_BYTES = 524_288;
+
+    private const int MAX_TEXT_SCAN_BYTES = 16_777_216;
 
     private const array SCOPES = [
         'project',
@@ -44,8 +51,6 @@ final readonly class SearchEngine
         'docs',
         'all',
     ];
-
-    private const array KINDS = ['auto', 'symbol', 'path', 'text'];
 
     private const array TEXT_EXTENSIONS = [
         'conf',
@@ -62,9 +67,11 @@ final readonly class SearchEngine
         'yml',
     ];
 
-    private SymbolIndex $symbols;
-    private SecretPolicy $secrets;
     private Redactor $redactor;
+
+    private SecretPolicy $secrets;
+
+    private SymbolIndex $symbols;
 
     public function __construct(
         private Project $project,
@@ -125,7 +132,7 @@ final readonly class SearchEngine
             }
         }
 
-        usort($results, static fn (array $left, array $right): int => [
+        usort($results, static fn(array $left, array $right): int => [
             -$left['score'],
             $left['kind'],
             $left['scope'],
@@ -144,6 +151,249 @@ final readonly class SearchEngine
         ]);
 
         return array_slice($results, 0, $limit);
+    }
+
+    /** @return list<SearchTarget> */
+    private function allTargets(?string $package): array
+    {
+        $targets = [$this->projectTarget('project', null)];
+
+        if ($this->composer->package('infocyph/foundation')?->installPath !== null) {
+            $targets[] = $this->packageTarget('foundation', 'infocyph/foundation');
+        }
+
+        if ($package !== null && $package !== '' && $package !== 'infocyph/foundation') {
+            $targets[] = $this->packageTarget('packages', $package);
+        }
+
+        return $targets;
+    }
+
+    private function couldContainPrefix(string $path, ?string $prefix): bool
+    {
+        if ($prefix === null) {
+            return true;
+        }
+
+        $path = trim(str_replace('\\', '/', $path), '/');
+
+        return $path === $prefix
+            || str_starts_with($prefix, $path . '/')
+            || str_starts_with($path, $prefix . '/');
+    }
+
+    private function excerpt(string $value): string
+    {
+        if (strlen($value) <= self::MAX_EXCERPT_BYTES) {
+            return $value;
+        }
+
+        return substr($value, 0, self::MAX_EXCERPT_BYTES - 3) . '...';
+    }
+
+    private function excluded(string $path, bool $project): bool
+    {
+        $normalized = strtolower(trim(str_replace('\\', '/', $path), '/'));
+        $segments = explode('/', $normalized);
+
+        foreach (['.git', 'build', 'coverage', 'dist', 'node_modules', 'storage', 'temp', 'tmp', 'vendor'] as $segment) {
+            if (in_array($segment, $segments, true)) {
+                return true;
+            }
+        }
+
+        if (
+            $normalized === 'bootstrap/cache'
+            || str_starts_with($normalized, 'bootstrap/cache/')
+            || $normalized === 'public/build'
+            || str_starts_with($normalized, 'public/build/')
+        ) {
+            return true;
+        }
+
+        return $project && ($normalized === 'vendor' || str_starts_with($normalized, 'vendor/'));
+    }
+
+    /** @return SearchTarget */
+    private function packageTarget(string $scope, string $package): array
+    {
+        $installed = $this->composer->package($package);
+
+        if ($installed?->installPath === null) {
+            throw new RuntimeException('Requested package is not installed with a source root.');
+        }
+
+        return [
+            'scope' => $scope,
+            'package' => $package,
+            'root' => $installed->installPath,
+            'prefix' => null,
+        ];
+    }
+
+    /** @param SearchTarget $target */
+    private function pathInTarget(string $path, array $target): bool
+    {
+        $prefix = $target['prefix'];
+
+        if ($prefix === null) {
+            return true;
+        }
+
+        $normalized = trim(str_replace('\\', '/', $path), '/');
+
+        return $normalized === $prefix || str_starts_with($normalized, $prefix . '/');
+    }
+
+    /**
+     * @param SearchTarget $target
+     * @param array<string,string> $manifest path => absolute path
+     * @return list<SearchResult>
+     */
+    private function pathResults(string $query, array $target, array $manifest): array
+    {
+        $results = [];
+        $needle = strtolower(trim(str_replace('\\', '/', $query), '/'));
+
+        foreach ($manifest as $path => $_absolute) {
+            $normalized = strtolower($path);
+            $basename = strtolower(basename($path));
+            $score = match (true) {
+                $normalized === $needle => 780,
+                $basename === $needle => 760,
+                str_starts_with($normalized, $needle) => 710,
+                str_starts_with($basename, $needle) => 700,
+                str_contains($basename, $needle) => 680,
+                str_contains($normalized, $needle) => 660,
+                default => null,
+            };
+
+            if ($score === null) {
+                continue;
+            }
+
+            $results[] = [
+                'kind' => 'path',
+                'scope' => $target['scope'],
+                'package' => $target['package'],
+                'path' => $path,
+                'line' => null,
+                'score' => $score,
+                'symbol' => null,
+                'excerpt' => null,
+            ];
+        }
+
+        return $results;
+    }
+
+    /** @return SearchTarget */
+    private function projectTarget(string $scope, ?string $prefix): array
+    {
+        return [
+            'scope' => $scope,
+            'package' => null,
+            'root' => $this->project->root,
+            'prefix' => $prefix,
+        ];
+    }
+
+    private function relative(string $path, string $root): ?string
+    {
+        $path = str_replace('\\', '/', rtrim($path, '/\\'));
+        $root = str_replace('\\', '/', rtrim($root, '/\\'));
+        $comparisonPath = PHP_OS_FAMILY === 'Windows' ? strtolower($path) : $path;
+        $comparisonRoot = PHP_OS_FAMILY === 'Windows' ? strtolower($root) : $root;
+
+        if (!str_starts_with($comparisonPath, $comparisonRoot . '/')) {
+            return null;
+        }
+
+        return substr($path, strlen($root) + 1);
+    }
+
+    private function requiredPackage(?string $package): string
+    {
+        $package = trim((string) $package);
+
+        if ($package === '') {
+            throw new InvalidArgumentException('Package scope requires an explicit package name.');
+        }
+
+        return $package;
+    }
+
+    /** @param SearchTarget $target @return array<string,string> path => absolute path */
+    private function resourceManifest(array $target): array
+    {
+        $files = [];
+        $stack = [$target['root']];
+
+        while (($directory = array_pop($stack)) !== null) {
+            $entries = scandir($directory);
+
+            if ($entries === false) {
+                continue;
+            }
+
+            foreach ($entries as $entry) {
+                if ($entry === '.' || $entry === '..') {
+                    continue;
+                }
+
+                $absolute = $directory . DIRECTORY_SEPARATOR . $entry;
+
+                if (is_link($absolute)) {
+                    continue;
+                }
+
+                $path = $this->relative($absolute, $target['root']);
+
+                if ($path === null || $this->excluded($path, $target['package'] === null)) {
+                    continue;
+                }
+
+                if (!$this->pathInTarget($path, $target)) {
+                    if (is_dir($absolute) && $this->couldContainPrefix($path, $target['prefix'])) {
+                        $stack[] = $absolute;
+                    }
+
+                    continue;
+                }
+
+                if (is_dir($absolute)) {
+                    $stack[] = $absolute;
+
+                    continue;
+                }
+
+                if (!is_file($absolute) || $this->secrets->denied($path)) {
+                    continue;
+                }
+
+                $files[$path] = $absolute;
+
+                if (count($files) >= self::MAX_SCAN_FILES) {
+                    break 2;
+                }
+            }
+        }
+
+        ksort($files, SORT_STRING);
+
+        return $files;
+    }
+
+    /** @param array<string,mixed> $symbol */
+    private function symbolExcerpt(array $symbol): string
+    {
+        $signature = $symbol['kind'] . ' ' . $symbol['symbol'];
+
+        if ($symbol['type'] !== null) {
+            $signature .= ': ' . $symbol['type'];
+        }
+
+        return $this->excerpt($signature);
     }
 
     /** @param list<SearchTarget> $targets @return list<SearchResult> */
@@ -223,58 +473,28 @@ final readonly class SearchEngine
         return str_contains($nameLower, $lower) ? 810 : null;
     }
 
-    /** @param array<string,mixed> $symbol */
-    private function symbolExcerpt(array $symbol): string
+    /** @return list<SearchTarget> */
+    private function targets(string $scope, ?string $package): array
     {
-        $signature = $symbol['kind'].' '.$symbol['symbol'];
-
-        if ($symbol['type'] !== null) {
-            $signature .= ': '.$symbol['type'];
-        }
-
-        return $this->excerpt($signature);
+        return match ($scope) {
+            'project' => [$this->projectTarget('project', null)],
+            'tests', 'routes', 'config', 'bootstrap', 'docs' => [$this->projectTarget($scope, $scope)],
+            'foundation' => [$this->packageTarget('foundation', 'infocyph/foundation')],
+            'packages' => [$this->packageTarget('packages', $this->requiredPackage($package))],
+            'all' => $this->allTargets($package),
+            default => throw new InvalidArgumentException('Unsupported search scope.'),
+        };
     }
 
-    /**
-     * @param SearchTarget $target
-     * @param array<string,string> $manifest path => absolute path
-     * @return list<SearchResult>
-     */
-    private function pathResults(string $query, array $target, array $manifest): array
+    private function textCandidate(string $path): bool
     {
-        $results = [];
-        $needle = strtolower(trim(str_replace('\\', '/', $query), '/'));
+        $basename = strtolower(basename($path));
 
-        foreach ($manifest as $path => $_absolute) {
-            $normalized = strtolower($path);
-            $basename = strtolower(basename($path));
-            $score = match (true) {
-                $normalized === $needle => 780,
-                $basename === $needle => 760,
-                str_starts_with($normalized, $needle) => 710,
-                str_starts_with($basename, $needle) => 700,
-                str_contains($basename, $needle) => 680,
-                str_contains($normalized, $needle) => 660,
-                default => null,
-            };
-
-            if ($score === null) {
-                continue;
-            }
-
-            $results[] = [
-                'kind' => 'path',
-                'scope' => $target['scope'],
-                'package' => $target['package'],
-                'path' => $path,
-                'line' => null,
-                'score' => $score,
-                'symbol' => null,
-                'excerpt' => null,
-            ];
+        if ($basename === '.env.example') {
+            return true;
         }
 
-        return $results;
+        return in_array(strtolower(pathinfo($basename, PATHINFO_EXTENSION)), self::TEXT_EXTENSIONS, true);
     }
 
     /**
@@ -350,217 +570,5 @@ final readonly class SearchEngine
         }
 
         return $results;
-    }
-
-    /** @return list<SearchTarget> */
-    private function targets(string $scope, ?string $package): array
-    {
-        return match ($scope) {
-            'project' => [$this->projectTarget('project', null)],
-            'tests', 'routes', 'config', 'bootstrap', 'docs' => [$this->projectTarget($scope, $scope)],
-            'foundation' => [$this->packageTarget('foundation', 'infocyph/foundation')],
-            'packages' => [$this->packageTarget('packages', $this->requiredPackage($package))],
-            'all' => $this->allTargets($package),
-            default => throw new InvalidArgumentException('Unsupported search scope.'),
-        };
-    }
-
-    /** @return SearchTarget */
-    private function projectTarget(string $scope, ?string $prefix): array
-    {
-        return [
-            'scope' => $scope,
-            'package' => null,
-            'root' => $this->project->root,
-            'prefix' => $prefix,
-        ];
-    }
-
-    /** @return SearchTarget */
-    private function packageTarget(string $scope, string $package): array
-    {
-        $installed = $this->composer->package($package);
-
-        if ($installed?->installPath === null) {
-            throw new RuntimeException('Requested package is not installed with a source root.');
-        }
-
-        return [
-            'scope' => $scope,
-            'package' => $package,
-            'root' => $installed->installPath,
-            'prefix' => null,
-        ];
-    }
-
-    /** @return list<SearchTarget> */
-    private function allTargets(?string $package): array
-    {
-        $targets = [$this->projectTarget('project', null)];
-
-        if ($this->composer->package('infocyph/foundation')?->installPath !== null) {
-            $targets[] = $this->packageTarget('foundation', 'infocyph/foundation');
-        }
-
-        if ($package !== null && $package !== '' && $package !== 'infocyph/foundation') {
-            $targets[] = $this->packageTarget('packages', $package);
-        }
-
-        return $targets;
-    }
-
-    private function requiredPackage(?string $package): string
-    {
-        $package = trim((string) $package);
-
-        if ($package === '') {
-            throw new InvalidArgumentException('Package scope requires an explicit package name.');
-        }
-
-        return $package;
-    }
-
-    /** @param SearchTarget $target @return array<string,string> path => absolute path */
-    private function resourceManifest(array $target): array
-    {
-        $files = [];
-        $stack = [$target['root']];
-
-        while (($directory = array_pop($stack)) !== null) {
-            $entries = scandir($directory);
-
-            if ($entries === false) {
-                continue;
-            }
-
-            foreach ($entries as $entry) {
-                if ($entry === '.' || $entry === '..') {
-                    continue;
-                }
-
-                $absolute = $directory.DIRECTORY_SEPARATOR.$entry;
-
-                if (is_link($absolute)) {
-                    continue;
-                }
-
-                $path = $this->relative($absolute, $target['root']);
-
-                if ($path === null || $this->excluded($path, $target['package'] === null)) {
-                    continue;
-                }
-
-                if (!$this->pathInTarget($path, $target)) {
-                    if (is_dir($absolute) && $this->couldContainPrefix($path, $target['prefix'])) {
-                        $stack[] = $absolute;
-                    }
-
-                    continue;
-                }
-
-                if (is_dir($absolute)) {
-                    $stack[] = $absolute;
-                    continue;
-                }
-
-                if (!is_file($absolute) || $this->secrets->denied($path)) {
-                    continue;
-                }
-
-                $files[$path] = $absolute;
-
-                if (count($files) >= self::MAX_SCAN_FILES) {
-                    break 2;
-                }
-            }
-        }
-
-        ksort($files, SORT_STRING);
-
-        return $files;
-    }
-
-    /** @param SearchTarget $target */
-    private function pathInTarget(string $path, array $target): bool
-    {
-        $prefix = $target['prefix'];
-
-        if ($prefix === null) {
-            return true;
-        }
-
-        $normalized = trim(str_replace('\\', '/', $path), '/');
-
-        return $normalized === $prefix || str_starts_with($normalized, $prefix.'/');
-    }
-
-    private function couldContainPrefix(string $path, ?string $prefix): bool
-    {
-        if ($prefix === null) {
-            return true;
-        }
-
-        $path = trim(str_replace('\\', '/', $path), '/');
-
-        return $path === $prefix
-            || str_starts_with($prefix, $path.'/')
-            || str_starts_with($path, $prefix.'/');
-    }
-
-    private function excluded(string $path, bool $project): bool
-    {
-        $normalized = strtolower(trim(str_replace('\\', '/', $path), '/'));
-        $segments = explode('/', $normalized);
-
-        foreach (['.git', 'build', 'coverage', 'dist', 'node_modules', 'storage', 'temp', 'tmp', 'vendor'] as $segment) {
-            if (in_array($segment, $segments, true)) {
-                return true;
-            }
-        }
-
-        if (
-            $normalized === 'bootstrap/cache'
-            || str_starts_with($normalized, 'bootstrap/cache/')
-            || $normalized === 'public/build'
-            || str_starts_with($normalized, 'public/build/')
-        ) {
-            return true;
-        }
-
-        return $project && ($normalized === 'vendor' || str_starts_with($normalized, 'vendor/'));
-    }
-
-    private function textCandidate(string $path): bool
-    {
-        $basename = strtolower(basename($path));
-
-        if ($basename === '.env.example') {
-            return true;
-        }
-
-        return in_array(strtolower(pathinfo($basename, PATHINFO_EXTENSION)), self::TEXT_EXTENSIONS, true);
-    }
-
-    private function excerpt(string $value): string
-    {
-        if (strlen($value) <= self::MAX_EXCERPT_BYTES) {
-            return $value;
-        }
-
-        return substr($value, 0, self::MAX_EXCERPT_BYTES - 3).'...';
-    }
-
-    private function relative(string $path, string $root): ?string
-    {
-        $path = str_replace('\\', '/', rtrim($path, '/\\'));
-        $root = str_replace('\\', '/', rtrim($root, '/\\'));
-        $comparisonPath = PHP_OS_FAMILY === 'Windows' ? strtolower($path) : $path;
-        $comparisonRoot = PHP_OS_FAMILY === 'Windows' ? strtolower($root) : $root;
-
-        if (!str_starts_with($comparisonPath, $comparisonRoot.'/')) {
-            return null;
-        }
-
-        return substr($path, strlen($root) + 1);
     }
 }

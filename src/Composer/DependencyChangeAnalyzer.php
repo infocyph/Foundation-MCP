@@ -11,18 +11,21 @@ use Infocyph\FoundationMcp\Project\Project;
 use JsonException;
 use RuntimeException;
 
-final class DependencyChangeAnalyzer
+final readonly class DependencyChangeAnalyzer
 {
     private const int MAX_JSON_BYTES = 33_554_432;
+
     private const int MAX_REFERENCES = 500;
+
     private const string PACKAGE_PATTERN = '~^[a-z0-9_.-]+/[a-z0-9_.-]+$~D';
 
-    private readonly GitRunner $git;
-    private readonly ReferenceIndex $references;
+    private GitRunner $git;
+
+    private ReferenceIndex $references;
 
     public function __construct(
-        private readonly Project $project,
-        private readonly ComposerInspector $composer,
+        private Project $project,
+        private ComposerInspector $composer,
         ?GitRunner $git = null,
         ?ReferenceIndex $references = null,
     ) {
@@ -43,6 +46,7 @@ final class DependencyChangeAnalyzer
         }
 
         $diagnostics = [];
+
         try {
             $beforeComposer = $this->decode($baselineComposer, 'HEAD composer.json');
             $beforeLock = $this->decodeOptional($this->git->headFile('composer.lock'), 'HEAD composer.lock');
@@ -63,6 +67,7 @@ final class DependencyChangeAnalyzer
         foreach ($afterDirect as $name => $entry) {
             if (!isset($beforeDirect[$name])) {
                 $directAdded[] = ['package' => $name, ...$entry];
+
                 continue;
             }
             if ($beforeDirect[$name]['constraint'] !== $entry['constraint']) {
@@ -85,6 +90,7 @@ final class DependencyChangeAnalyzer
         foreach ($afterLocked as $name => $entry) {
             if (!isset($beforeLocked[$name])) {
                 $lockedAdded[] = ['package' => $name, 'version' => $entry['version']];
+
                 continue;
             }
             if ($beforeLocked[$name]['version'] !== $entry['version']) {
@@ -130,8 +136,9 @@ final class DependencyChangeAnalyzer
         $changed = array_keys($changedPackages);
 
         $modules = [];
+
         try {
-            foreach ((new ModuleCatalogReader($this->project, $this->composer))->definitions() as $name => $definition) {
+            foreach (new ModuleCatalogReader($this->project, $this->composer)->definitions() as $name => $definition) {
                 if (array_intersect(array_keys($definition['packages']), $changed) !== []) {
                     $modules[] = $name;
                 }
@@ -162,44 +169,28 @@ final class DependencyChangeAnalyzer
     }
 
     /** @return array<string,mixed> */
-    private function readCurrentLock(): array
+    private function decode(string $json, string $label): array
     {
-        $path = $this->project->root.DIRECTORY_SEPARATOR.'composer.lock';
-        if (!is_file($path)) {
-            return [];
+        if (strlen($json) > self::MAX_JSON_BYTES) {
+            throw new RuntimeException($label . ' exceeds the dependency-change inspection limit.');
         }
-        $size = filesize($path);
-        if ($size === false || $size > self::MAX_JSON_BYTES) {
-            throw new RuntimeException('composer.lock exceeds the dependency-change inspection limit.');
+
+        try {
+            $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException $error) {
+            throw new RuntimeException($label . ' is invalid JSON: ' . $error->getMessage(), 0, $error);
         }
-        $contents = file_get_contents($path);
-        if (!is_string($contents)) {
-            throw new RuntimeException('Unable to read composer.lock.');
+        if (!is_array($decoded)) {
+            throw new RuntimeException($label . ' does not contain a JSON object.');
         }
-        return $this->decode($contents, 'composer.lock');
+
+        return $decoded;
     }
 
     /** @return array<string,mixed> */
     private function decodeOptional(?string $json, string $label): array
     {
         return $json === null ? [] : $this->decode($json, $label);
-    }
-
-    /** @return array<string,mixed> */
-    private function decode(string $json, string $label): array
-    {
-        if (strlen($json) > self::MAX_JSON_BYTES) {
-            throw new RuntimeException($label.' exceeds the dependency-change inspection limit.');
-        }
-        try {
-            $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
-        } catch (JsonException $error) {
-            throw new RuntimeException($label.' is invalid JSON: '.$error->getMessage(), 0, $error);
-        }
-        if (!is_array($decoded)) {
-            throw new RuntimeException($label.' does not contain a JSON object.');
-        }
-        return $decoded;
     }
 
     /** @param array<string,mixed> $composer @return array<string,array{constraint:string,scope:string}> */
@@ -221,7 +212,29 @@ final class DependencyChangeAnalyzer
             }
         }
         ksort($direct, SORT_STRING);
+
         return $direct;
+    }
+
+    /** @param list<array{code:string,message:string}> $diagnostics */
+    private function empty(array $diagnostics): array
+    {
+        return [
+            'changed' => false,
+            'changed_packages' => [],
+            'direct_added' => [],
+            'direct_removed' => [],
+            'constraint_changes' => [],
+            'scope_changes' => [],
+            'locked_added' => [],
+            'locked_removed' => [],
+            'version_changes' => [],
+            'source_reference_changes' => [],
+            'transitive' => ['added' => [], 'removed' => [], 'changed' => []],
+            'affected_modules' => [],
+            'project_references' => [],
+            'diagnostics' => $diagnostics,
+        ];
     }
 
     /** @param array<string,mixed> $lock @return array<string,array{version:?string,reference:?string,autoload:array<string,mixed>}> */
@@ -246,19 +259,8 @@ final class DependencyChangeAnalyzer
             }
         }
         ksort($packages, SORT_STRING);
-        return $packages;
-    }
 
-    private function reference(array $item): ?string
-    {
-        foreach (['source', 'dist'] as $key) {
-            $source = $item[$key] ?? null;
-            $reference = is_array($source) ? ($source['reference'] ?? null) : null;
-            if (is_string($reference) && $reference !== '') {
-                return $reference;
-            }
-        }
-        return null;
+        return $packages;
     }
 
     /**
@@ -295,7 +297,7 @@ final class DependencyChangeAnalyzer
         $results = [];
         foreach ($this->references->project() as $reference) {
             foreach ($prefixes as $package => $packagePrefixes) {
-                if (!array_any($packagePrefixes, static fn (string $prefix): bool => str_starts_with(ltrim($reference['target'], '\\'), ltrim($prefix, '\\')))) {
+                if (!array_any($packagePrefixes, static fn(string $prefix): bool => str_starts_with(ltrim($reference['target'], '\\'), ltrim($prefix, '\\')))) {
                     continue;
                 }
                 $results[] = [
@@ -309,31 +311,44 @@ final class DependencyChangeAnalyzer
                 if (count($results) >= self::MAX_REFERENCES) {
                     return $results;
                 }
+
                 break;
             }
         }
-        usort($results, static fn (array $left, array $right): int => [$left['package'], $left['path'], $left['line'], $left['target']] <=> [$right['package'], $right['path'], $right['line'], $right['target']]);
+        usort($results, static fn(array $left, array $right): int => [$left['package'], $left['path'], $left['line'], $left['target']] <=> [$right['package'], $right['path'], $right['line'], $right['target']]);
+
         return $results;
     }
 
-    /** @param list<array{code:string,message:string}> $diagnostics */
-    private function empty(array $diagnostics): array
+    /** @return array<string,mixed> */
+    private function readCurrentLock(): array
     {
-        return [
-            'changed' => false,
-            'changed_packages' => [],
-            'direct_added' => [],
-            'direct_removed' => [],
-            'constraint_changes' => [],
-            'scope_changes' => [],
-            'locked_added' => [],
-            'locked_removed' => [],
-            'version_changes' => [],
-            'source_reference_changes' => [],
-            'transitive' => ['added' => [], 'removed' => [], 'changed' => []],
-            'affected_modules' => [],
-            'project_references' => [],
-            'diagnostics' => $diagnostics,
-        ];
+        $path = $this->project->root . DIRECTORY_SEPARATOR . 'composer.lock';
+        if (!is_file($path)) {
+            return [];
+        }
+        $size = filesize($path);
+        if ($size === false || $size > self::MAX_JSON_BYTES) {
+            throw new RuntimeException('composer.lock exceeds the dependency-change inspection limit.');
+        }
+        $contents = file_get_contents($path);
+        if (!is_string($contents)) {
+            throw new RuntimeException('Unable to read composer.lock.');
+        }
+
+        return $this->decode($contents, 'composer.lock');
+    }
+
+    private function reference(array $item): ?string
+    {
+        foreach (['source', 'dist'] as $key) {
+            $source = $item[$key] ?? null;
+            $reference = is_array($source) ? ($source['reference'] ?? null) : null;
+            if (is_string($reference) && $reference !== '') {
+                return $reference;
+            }
+        }
+
+        return null;
     }
 }

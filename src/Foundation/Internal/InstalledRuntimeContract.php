@@ -16,18 +16,18 @@ use PhpParser\ParserFactory;
 use RuntimeException;
 
 /** @phpstan-type Diagnostic array{code:string,source:?string,line:?int,message:string} */
-final class InstalledRuntimeContract
+final readonly class InstalledRuntimeContract
 {
     private const int MAX_SOURCE_BYTES = 262_144;
 
-    private readonly Parser $parser;
+    private Parser $parser;
 
     public function __construct(
-        private readonly Project $project,
-        private readonly ComposerInspector $composer,
+        private Project $project,
+        private ComposerInspector $composer,
         ?Parser $parser = null,
     ) {
-        $this->parser = $parser ?? (new ParserFactory())->createForNewestSupportedVersion();
+        $this->parser = $parser ?? new ParserFactory()->createForNewestSupportedVersion();
     }
 
     /** @return array{methods:array<string,string>,preset:bool,diagnostics:list<Diagnostic>} */
@@ -102,6 +102,7 @@ final class InstalledRuntimeContract
                 $name = strtolower($method->name->toString());
                 if ($name === 'preset') {
                     $preset = true;
+
                     continue;
                 }
                 $mode = $this->runtimeMode($method);
@@ -127,6 +128,7 @@ final class InstalledRuntimeContract
                 }
             }
         }
+
         return $classes;
     }
 
@@ -149,8 +151,10 @@ final class InstalledRuntimeContract
             if ($class !== 'Infocyph\\Foundation\\Application\\RuntimeMode') {
                 continue;
             }
+
             return strtolower($arg->name->toString());
         }
+
         return null;
     }
 }

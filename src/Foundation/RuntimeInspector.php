@@ -23,12 +23,16 @@ use RuntimeException;
 final class RuntimeInspector
 {
     private const array GRAPHS = ['web', 'cli', 'worker', 'scheduler'];
+
     private const int MAX_INLINE_OPTIONS = 512;
 
-    private readonly Parser $parser;
-    private readonly PathPolicy $paths;
-    private readonly SecretPolicy $secrets;
     private readonly ConfigEntryExtractor $extractor;
+
+    private readonly Parser $parser;
+
+    private readonly PathPolicy $paths;
+
+    private readonly SecretPolicy $secrets;
 
     /** @var list<Diagnostic> */
     private array $diagnostics = [];
@@ -38,7 +42,7 @@ final class RuntimeInspector
         private readonly ComposerInspector $composer,
         ?Parser $parser = null,
     ) {
-        $this->parser = $parser ?? (new ParserFactory())->createForNewestSupportedVersion();
+        $this->parser = $parser ?? new ParserFactory()->createForNewestSupportedVersion();
         $this->paths = new PathPolicy($project->root);
         $this->secrets = new SecretPolicy();
         $this->extractor = new ConfigEntryExtractor($this->parser, new Redactor());
@@ -55,7 +59,7 @@ final class RuntimeInspector
     public function inspect(): array
     {
         $this->diagnostics = [];
-        $contract = (new InstalledRuntimeContract($this->project, $this->composer, $this->parser))->read();
+        $contract = new InstalledRuntimeContract($this->project, $this->composer, $this->parser)->read();
         $this->diagnostics = $contract['diagnostics'];
         $relative = 'bootstrap/app.php';
 
@@ -73,9 +77,10 @@ final class RuntimeInspector
             'diagnostics' => [],
         ];
 
-        if (!is_file($this->project->root.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'app.php')) {
+        if (!is_file($this->project->root . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php')) {
             $this->diagnostic('bootstrap_missing', $relative, null, 'Project bootstrap/app.php is missing.');
             $result['diagnostics'] = $this->allDiagnostics();
+
             return $result;
         }
 
@@ -86,6 +91,7 @@ final class RuntimeInspector
             $this->diagnostic('bootstrap_invalid', $relative, null, $error->getMessage());
             $result['runtime_status'] = 'invalid';
             $result['diagnostics'] = $this->allDiagnostics();
+
             return $result;
         }
 
@@ -95,6 +101,7 @@ final class RuntimeInspector
             $this->diagnostic('runtime_dynamic', $relative, $return?->getStartLine(), 'Bootstrap runtime selection is not a statically inspectable Foundation call.');
             $result['runtime_status'] = 'dynamic';
             $result['diagnostics'] = $this->allDiagnostics();
+
             return $result;
         }
 
@@ -104,6 +111,7 @@ final class RuntimeInspector
             $this->diagnostic('runtime_dynamic', $relative, $call->getStartLine(), 'Bootstrap return does not select an installed Foundation runtime entry point.');
             $result['runtime_status'] = 'dynamic';
             $result['diagnostics'] = $this->allDiagnostics();
+
             return $result;
         }
 
@@ -153,18 +161,19 @@ final class RuntimeInspector
         }
 
         $result['diagnostics'] = $this->allDiagnostics();
+
         return $result;
     }
 
-    /** @param array<string,string> $methods @return array<string,array{selected:bool,available:bool}> */
-    private function graphs(?string $selected, array $methods): array
+    private function absolute(string $path): bool
     {
-        $available = array_fill_keys(array_values($methods), true);
-        $graphs = [];
-        foreach (self::GRAPHS as $graph) {
-            $graphs[$graph] = ['selected' => $selected === $graph, 'available' => isset($available[$graph])];
-        }
-        return $graphs;
+        return str_starts_with($path, '/') || str_starts_with($path, '//') || preg_match('/^[A-Za-z]:\//', $path) === 1;
+    }
+
+    /** @return list<Diagnostic> */
+    private function allDiagnostics(): array
+    {
+        return array_slice([...$this->diagnostics, ...$this->extractor->diagnostics()], 0, 100);
     }
 
     /** @return array{0:?string,1:string} */
@@ -184,40 +193,33 @@ final class RuntimeInspector
                     return [trim($literal, '/'), 'literal_relative'];
                 }
                 $this->diagnostic('base_path_outside_project', 'bootstrap/app.php', $value->getStartLine(), 'Absolute or parent-traversing bootstrap base paths are not exposed.');
+
                 return [null, 'denied'];
             }
+
             return [null, 'dynamic'];
         }
+
         return [null, 'missing'];
     }
 
-    private function projectRootExpression(Node\Expr $expr): bool
+    private function diagnostic(string $code, ?string $source, ?int $line, string $message): void
     {
-        if (!$expr instanceof Node\Expr\FuncCall || !$expr->name instanceof Node\Name || strtolower($expr->name->toString()) !== 'dirname') {
-            return false;
+        if (count($this->diagnostics) < 100) {
+            $this->diagnostics[] = compact('code', 'source', 'line', 'message');
         }
-        $first = $expr->args[0]->value ?? null;
-        if ($first instanceof Node\Scalar\MagicConst\Dir) {
-            $levels = $expr->args[1]->value ?? null;
-            return $levels === null || ($levels instanceof Node\Scalar\Int_ && $levels->value === 1);
-        }
-        if ($first instanceof Node\Scalar\MagicConst\File) {
-            $levels = $expr->args[1]->value ?? null;
-            return $levels instanceof Node\Scalar\Int_ && $levels->value === 2;
-        }
-        return false;
     }
 
-    private function runtimeMode(Node\Expr $expr): ?string
+    /** @param array<string,string> $methods @return array<string,array{selected:bool,available:bool}> */
+    private function graphs(?string $selected, array $methods): array
     {
-        if (!$expr instanceof Node\Expr\ClassConstFetch || !$expr->class instanceof Node\Name || !$expr->name instanceof Node\Identifier) {
-            return null;
+        $available = array_fill_keys(array_values($methods), true);
+        $graphs = [];
+        foreach (self::GRAPHS as $graph) {
+            $graphs[$graph] = ['selected' => $selected === $graph, 'available' => isset($available[$graph])];
         }
-        if ($this->resolvedName($expr->class) !== 'Infocyph\\Foundation\\Application\\RuntimeMode') {
-            return null;
-        }
-        $value = strtolower($expr->name->toString());
-        return in_array($value, self::GRAPHS, true) ? $value : null;
+
+        return $graphs;
     }
 
     private function presetClass(Node\Expr $expr): ?string
@@ -229,30 +231,47 @@ final class RuntimeInspector
             && strtolower($expr->name->toString()) === 'class') {
             return $this->resolvedName($expr->class);
         }
+
         return null;
+    }
+
+    private function projectRootExpression(Node\Expr $expr): bool
+    {
+        if (!$expr instanceof Node\Expr\FuncCall || !$expr->name instanceof Node\Name || strtolower($expr->name->toString()) !== 'dirname') {
+            return false;
+        }
+        $first = $expr->args[0]->value ?? null;
+        if ($first instanceof Node\Scalar\MagicConst\Dir) {
+            $levels = $expr->args[1]->value ?? null;
+
+            return $levels === null || ($levels instanceof Node\Scalar\Int_ && $levels->value === 1);
+        }
+        if ($first instanceof Node\Scalar\MagicConst\File) {
+            $levels = $expr->args[1]->value ?? null;
+
+            return $levels instanceof Node\Scalar\Int_ && $levels->value === 2;
+        }
+
+        return false;
     }
 
     private function resolvedName(Node\Name $name): string
     {
         $resolved = $name->getAttribute('resolvedName');
+
         return ltrim(($resolved instanceof Node\Name ? $resolved : $name)->toString(), '\\');
     }
 
-    private function absolute(string $path): bool
+    private function runtimeMode(Node\Expr $expr): ?string
     {
-        return str_starts_with($path, '/') || str_starts_with($path, '//') || preg_match('/^[A-Za-z]:\//', $path) === 1;
-    }
-
-    /** @return list<Diagnostic> */
-    private function allDiagnostics(): array
-    {
-        return array_slice([...$this->diagnostics, ...$this->extractor->diagnostics()], 0, 100);
-    }
-
-    private function diagnostic(string $code, ?string $source, ?int $line, string $message): void
-    {
-        if (count($this->diagnostics) < 100) {
-            $this->diagnostics[] = compact('code', 'source', 'line', 'message');
+        if (!$expr instanceof Node\Expr\ClassConstFetch || !$expr->class instanceof Node\Name || !$expr->name instanceof Node\Identifier) {
+            return null;
         }
+        if ($this->resolvedName($expr->class) !== 'Infocyph\\Foundation\\Application\\RuntimeMode') {
+            return null;
+        }
+        $value = strtolower($expr->name->toString());
+
+        return in_array($value, self::GRAPHS, true) ? $value : null;
     }
 }

@@ -6,12 +6,12 @@ namespace Infocyph\FoundationMcp\Security;
 
 use RuntimeException;
 
-final class PathPolicy
+final readonly class PathPolicy
 {
-    private readonly string $projectRoot;
-
     /** @var array<string, string> */
-    private readonly array $packageRoots;
+    private array $packageRoots;
+
+    private string $projectRoot;
 
     /**
      * @param array<string, string> $packageRoots
@@ -33,32 +33,14 @@ final class PathPolicy
         $this->packageRoots = $resolvedPackages;
     }
 
-    public function projectRoot(): string
+    public function packageDirectory(string $package, string $path): string
     {
-        return $this->projectRoot;
+        return $this->directoryPath($this->packagePath($package, $path));
     }
 
-    /**
-     * @return array<string, string>
-     */
-    public function packageRoots(): array
+    public function packageFile(string $package, string $path): string
     {
-        return $this->packageRoots;
-    }
-
-    public function projectPath(string $path): string
-    {
-        return $this->resolve($this->projectRoot, $path);
-    }
-
-    public function projectFile(string $path): string
-    {
-        return $this->regularFile($this->projectPath($path));
-    }
-
-    public function projectDirectory(string $path): string
-    {
-        return $this->directoryPath($this->projectPath($path));
+        return $this->regularFile($this->packagePath($package, $path));
     }
 
     public function packagePath(string $package, string $path): string
@@ -72,29 +54,80 @@ final class PathPolicy
         return $this->resolve($root, $path);
     }
 
-    public function packageFile(string $package, string $path): string
+    /**
+     * @return array<string, string>
+     */
+    public function packageRoots(): array
     {
-        return $this->regularFile($this->packagePath($package, $path));
+        return $this->packageRoots;
     }
 
-    public function packageDirectory(string $package, string $path): string
+    public function projectDirectory(string $path): string
     {
-        return $this->directoryPath($this->packagePath($package, $path));
+        return $this->directoryPath($this->projectPath($path));
     }
 
-    private function resolve(string $root, string $path): string
+    public function projectFile(string $path): string
     {
-        $relative = $this->relative($path);
-        $candidate = $relative === '.'
-            ? $root
-            : $root.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $relative);
-        $resolved = realpath($candidate);
+        return $this->regularFile($this->projectPath($path));
+    }
 
-        if ($resolved === false || !$this->contained($root, $resolved)) {
-            throw new RuntimeException('Path is outside the approved root or does not exist.');
+    public function projectPath(string $path): string
+    {
+        return $this->resolve($this->projectRoot, $path);
+    }
+
+    public function projectRoot(): string
+    {
+        return $this->projectRoot;
+    }
+
+    private function canonicalDirectory(string $path, string $label): string
+    {
+        if ($path === '' || str_contains($path, "\0")) {
+            throw new RuntimeException('Invalid ' . $label . '.');
         }
 
-        return $resolved;
+        $resolved = realpath($path);
+
+        if ($resolved === false || !is_dir($resolved)) {
+            throw new RuntimeException(ucfirst($label) . ' does not exist or is not a directory.');
+        }
+
+        return rtrim($resolved, DIRECTORY_SEPARATOR);
+    }
+
+    private function comparisonPath(string $path): string
+    {
+        $path = str_replace('\\', '/', rtrim($path, '/\\'));
+
+        return PHP_OS_FAMILY === 'Windows' ? strtolower($path) : $path;
+    }
+
+    private function contained(string $root, string $path): bool
+    {
+        $root = $this->comparisonPath($root);
+        $path = $this->comparisonPath($path);
+
+        return $path === $root || str_starts_with($path, $root . '/');
+    }
+
+    private function directoryPath(string $path): string
+    {
+        if (!is_dir($path)) {
+            throw new RuntimeException('Path is not a directory.');
+        }
+
+        return $path;
+    }
+
+    private function regularFile(string $path): string
+    {
+        if (!is_file($path)) {
+            throw new RuntimeException('Path is not a regular file.');
+        }
+
+        return $path;
     }
 
     private function relative(string $path): string
@@ -130,51 +163,18 @@ final class PathPolicy
         return $segments === [] ? '.' : implode('/', $segments);
     }
 
-    private function canonicalDirectory(string $path, string $label): string
+    private function resolve(string $root, string $path): string
     {
-        if ($path === '' || str_contains($path, "\0")) {
-            throw new RuntimeException('Invalid '.$label.'.');
+        $relative = $this->relative($path);
+        $candidate = $relative === '.'
+            ? $root
+            : $root . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relative);
+        $resolved = realpath($candidate);
+
+        if ($resolved === false || !$this->contained($root, $resolved)) {
+            throw new RuntimeException('Path is outside the approved root or does not exist.');
         }
 
-        $resolved = realpath($path);
-
-        if ($resolved === false || !is_dir($resolved)) {
-            throw new RuntimeException(ucfirst($label).' does not exist or is not a directory.');
-        }
-
-        return rtrim($resolved, DIRECTORY_SEPARATOR);
-    }
-
-    private function regularFile(string $path): string
-    {
-        if (!is_file($path)) {
-            throw new RuntimeException('Path is not a regular file.');
-        }
-
-        return $path;
-    }
-
-    private function directoryPath(string $path): string
-    {
-        if (!is_dir($path)) {
-            throw new RuntimeException('Path is not a directory.');
-        }
-
-        return $path;
-    }
-
-    private function contained(string $root, string $path): bool
-    {
-        $root = $this->comparisonPath($root);
-        $path = $this->comparisonPath($path);
-
-        return $path === $root || str_starts_with($path, $root.'/');
-    }
-
-    private function comparisonPath(string $path): string
-    {
-        $path = str_replace('\\', '/', rtrim($path, '/\\'));
-
-        return PHP_OS_FAMILY === 'Windows' ? strtolower($path) : $path;
+        return $resolved;
     }
 }

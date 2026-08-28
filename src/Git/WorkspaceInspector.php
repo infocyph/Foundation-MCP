@@ -15,18 +15,22 @@ use RuntimeException;
  * @phpstan-type SymbolDelta array{added:list<string>,removed:list<string>,modified:list<string>}
  * @phpstan-type ReferenceDelta array{added:list<array{relationship:string,target:string,confidence:string}>,removed:list<array{relationship:string,target:string,confidence:string}>}
  */
-final class WorkspaceInspector
+final readonly class WorkspaceInspector
 {
     private const int MAX_FILES = 500;
+
     private const int MAX_PHP_FILES = 200;
+
     private const int MAX_TESTS = 100;
 
-    private readonly GitRunner $git;
-    private readonly PhpAnalyzer $analyzer;
-    private readonly TestLocator $tests;
+    private PhpAnalyzer $analyzer;
+
+    private GitRunner $git;
+
+    private TestLocator $tests;
 
     public function __construct(
-        private readonly Project $project,
+        private Project $project,
         ComposerInspector $composer,
         ?GitRunner $git = null,
         ?PhpAnalyzer $analyzer = null,
@@ -79,6 +83,7 @@ final class WorkspaceInspector
             }
             if (++$phpCount > self::MAX_PHP_FILES) {
                 $diagnostics[] = ['code' => 'output_limit_exceeded', 'message' => sprintf('PHP change analysis is limited to %d changed PHP files.', self::MAX_PHP_FILES)];
+
                 break;
             }
             $delta = $this->phpDelta($file);
@@ -86,7 +91,7 @@ final class WorkspaceInspector
             foreach ([...$delta['declarations']['added'], ...$delta['declarations']['removed'], ...$delta['declarations']['modified']] as $symbol) {
                 $changedSymbols[$symbol] = true;
             }
-            if ($file['change'] !== 'deleted' && is_file($this->project->root.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $file['path']))) {
+            if ($file['change'] !== 'deleted' && is_file($this->project->root . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $file['path']))) {
                 try {
                     foreach ($this->tests->forFile($file['path'], 20) as $test) {
                         $affectedTests[$test['path']] = true;
@@ -123,7 +128,133 @@ final class WorkspaceInspector
             'changed_symbols' => $symbols,
             'affected_tests' => $testPaths,
             'areas' => array_keys($areas),
-            'composer_changed' => array_any($files, static fn (array $file): bool => in_array($file['path'], ['composer.json', 'composer.lock'], true)),
+            'composer_changed' => array_any($files, static fn(array $file): bool => in_array($file['path'], ['composer.json', 'composer.lock'], true)),
+            'diagnostics' => $diagnostics,
+        ];
+    }
+
+    /** @return list<string> */
+    private function areas(string $path): array
+    {
+        $path = str_replace('\\', '/', $path);
+        $areas = [];
+        if (in_array($path, ['composer.json', 'composer.lock'], true)) {
+            $areas[] = 'composer';
+        }
+        if ($path === 'bootstrap/app.php') {
+            $areas[] = 'runtime';
+        }
+        if ($path === 'bootstrap/providers.php') {
+            $areas[] = 'provider';
+        }
+        if ($path === 'routes/console.php') {
+            $areas[] = 'command';
+        }
+        if ($path === 'routes/schedule.php') {
+            $areas[] = 'schedule';
+        }
+        if ($path === 'routes/workers.php') {
+            $areas[] = 'worker';
+        }
+        if (str_starts_with($path, 'routes/') && !in_array($path, ['routes/console.php', 'routes/schedule.php', 'routes/workers.php'], true)) {
+            $areas[] = 'route';
+        }
+        if (str_starts_with($path, 'config/')) {
+            $areas[] = 'config';
+        }
+        if (str_ends_with($path, '/ModuleCatalog.php') || $path === 'src/Module/ModuleCatalog.php') {
+            $areas[] = 'module';
+        }
+        sort($areas, SORT_STRING);
+
+        return $areas;
+    }
+
+    private function changeType(string $x, string $y): string
+    {
+        if ($x === '?' && $y === '?') {
+            return 'untracked';
+        }
+        foreach ([$x, $y] as $status) {
+            $type = match ($status) {
+                'A' => 'added',
+                'D' => 'deleted',
+                'R' => 'renamed',
+                'C' => 'copied',
+                'T' => 'type_changed',
+                'U' => 'unmerged',
+                'M' => 'modified',
+                default => null,
+            };
+            if ($type !== null) {
+                return $type;
+            }
+        }
+
+        return 'unknown';
+    }
+
+    /** @param list<array<string,mixed>> $old @param list<array<string,mixed>> $new @return SymbolDelta */
+    private function declarationDelta(array $old, array $new): array
+    {
+        $oldMap = $this->declarationMap($old);
+        $newMap = $this->declarationMap($new);
+        $added = [];
+        $removed = [];
+        $modified = [];
+        foreach ($newMap as $key => $item) {
+            if (!isset($oldMap[$key])) {
+                $added[] = $item['symbol'];
+            } elseif ($oldMap[$key]['fingerprint'] !== $item['fingerprint']) {
+                $modified[] = $item['symbol'];
+            }
+        }
+        foreach ($oldMap as $key => $item) {
+            if (!isset($newMap[$key])) {
+                $removed[] = $item['symbol'];
+            }
+        }
+        foreach ([$added, $removed, $modified] as &$items) {
+            sort($items, SORT_STRING);
+        }
+        unset($items);
+
+        return compact('added', 'removed', 'modified');
+    }
+
+    /** @param list<array<string,mixed>> $items @return array<string,array{symbol:string,fingerprint:string}> */
+    private function declarationMap(array $items): array
+    {
+        $map = [];
+        foreach ($items as $item) {
+            $symbol = (string) ($item['symbol'] ?? '');
+            $kind = (string) ($item['kind'] ?? '');
+            if ($symbol === '' || $kind === '') {
+                continue;
+            }
+            $normalized = $item;
+            unset($normalized['line'], $normalized['end_line']);
+            $map[$kind . "\0" . $symbol] = ['symbol' => $symbol, 'fingerprint' => hash('sha256', json_encode($normalized, JSON_THROW_ON_ERROR))];
+        }
+
+        return $map;
+    }
+
+    /** @param list<array{code:string,message:string}> $diagnostics */
+    private function emptyResult(array $diagnostics): array
+    {
+        return [
+            'available' => false,
+            'head' => null,
+            'branch' => null,
+            'detached' => false,
+            'dirty' => false,
+            'files' => [],
+            'php_changes' => [],
+            'changed_symbols' => [],
+            'affected_tests' => [],
+            'areas' => [],
+            'composer_changed' => false,
             'diagnostics' => $diagnostics,
         ];
     }
@@ -163,7 +294,8 @@ final class WorkspaceInspector
                 'areas' => $this->areas($path),
             ];
         }
-        usort($files, static fn (array $left, array $right): int => [$left['path'], $left['original_path'] ?? ''] <=> [$right['path'], $right['original_path'] ?? '']);
+        usort($files, static fn(array $left, array $right): int => [$left['path'], $left['original_path'] ?? ''] <=> [$right['path'], $right['original_path'] ?? '']);
+
         return $files;
     }
 
@@ -201,50 +333,6 @@ final class WorkspaceInspector
         ];
     }
 
-    /** @param list<array<string,mixed>> $old @param list<array<string,mixed>> $new @return SymbolDelta */
-    private function declarationDelta(array $old, array $new): array
-    {
-        $oldMap = $this->declarationMap($old);
-        $newMap = $this->declarationMap($new);
-        $added = [];
-        $removed = [];
-        $modified = [];
-        foreach ($newMap as $key => $item) {
-            if (!isset($oldMap[$key])) {
-                $added[] = $item['symbol'];
-            } elseif ($oldMap[$key]['fingerprint'] !== $item['fingerprint']) {
-                $modified[] = $item['symbol'];
-            }
-        }
-        foreach ($oldMap as $key => $item) {
-            if (!isset($newMap[$key])) {
-                $removed[] = $item['symbol'];
-            }
-        }
-        foreach ([$added, $removed, $modified] as &$items) {
-            sort($items, SORT_STRING);
-        }
-        unset($items);
-        return compact('added', 'removed', 'modified');
-    }
-
-    /** @param list<array<string,mixed>> $items @return array<string,array{symbol:string,fingerprint:string}> */
-    private function declarationMap(array $items): array
-    {
-        $map = [];
-        foreach ($items as $item) {
-            $symbol = (string) ($item['symbol'] ?? '');
-            $kind = (string) ($item['kind'] ?? '');
-            if ($symbol === '' || $kind === '') {
-                continue;
-            }
-            $normalized = $item;
-            unset($normalized['line'], $normalized['end_line']);
-            $map[$kind."\0".$symbol] = ['symbol' => $symbol, 'fingerprint' => hash('sha256', json_encode($normalized, JSON_THROW_ON_ERROR))];
-        }
-        return $map;
-    }
-
     /** @param list<array<string,mixed>> $old @param list<array<string,mixed>> $new @return ReferenceDelta */
     private function referenceDelta(array $old, array $new): array
     {
@@ -262,9 +350,10 @@ final class WorkspaceInspector
                 $removed[] = $item;
             }
         }
-        $sort = static fn (array $left, array $right): int => [$left['relationship'], $left['target']] <=> [$right['relationship'], $right['target']];
+        $sort = static fn(array $left, array $right): int => [$left['relationship'], $left['target']] <=> [$right['relationship'], $right['target']];
         usort($added, $sort);
         usort($removed, $sort);
+
         return compact('added', 'removed');
     }
 
@@ -278,87 +367,10 @@ final class WorkspaceInspector
             if ($relationship === '' || $target === '') {
                 continue;
             }
-            $key = $relationship."\0".$target;
+            $key = $relationship . "\0" . $target;
             $map[$key] = ['relationship' => $relationship, 'target' => $target, 'confidence' => (string) ($item['confidence'] ?? 'lexical')];
         }
+
         return $map;
-    }
-
-    private function changeType(string $x, string $y): string
-    {
-        if ($x === '?' && $y === '?') {
-            return 'untracked';
-        }
-        foreach ([$x, $y] as $status) {
-            $type = match ($status) {
-                'A' => 'added',
-                'D' => 'deleted',
-                'R' => 'renamed',
-                'C' => 'copied',
-                'T' => 'type_changed',
-                'U' => 'unmerged',
-                'M' => 'modified',
-                default => null,
-            };
-            if ($type !== null) {
-                return $type;
-            }
-        }
-        return 'unknown';
-    }
-
-    /** @return list<string> */
-    private function areas(string $path): array
-    {
-        $path = str_replace('\\', '/', $path);
-        $areas = [];
-        if (in_array($path, ['composer.json', 'composer.lock'], true)) {
-            $areas[] = 'composer';
-        }
-        if ($path === 'bootstrap/app.php') {
-            $areas[] = 'runtime';
-        }
-        if ($path === 'bootstrap/providers.php') {
-            $areas[] = 'provider';
-        }
-        if ($path === 'routes/console.php') {
-            $areas[] = 'command';
-        }
-        if ($path === 'routes/schedule.php') {
-            $areas[] = 'schedule';
-        }
-        if ($path === 'routes/workers.php') {
-            $areas[] = 'worker';
-        }
-        if (str_starts_with($path, 'routes/') && !in_array($path, ['routes/console.php', 'routes/schedule.php', 'routes/workers.php'], true)) {
-            $areas[] = 'route';
-        }
-        if (str_starts_with($path, 'config/')) {
-            $areas[] = 'config';
-        }
-        if (str_ends_with($path, '/ModuleCatalog.php') || $path === 'src/Module/ModuleCatalog.php') {
-            $areas[] = 'module';
-        }
-        sort($areas, SORT_STRING);
-        return $areas;
-    }
-
-    /** @param list<array{code:string,message:string}> $diagnostics */
-    private function emptyResult(array $diagnostics): array
-    {
-        return [
-            'available' => false,
-            'head' => null,
-            'branch' => null,
-            'detached' => false,
-            'dirty' => false,
-            'files' => [],
-            'php_changes' => [],
-            'changed_symbols' => [],
-            'affected_tests' => [],
-            'areas' => [],
-            'composer_changed' => false,
-            'diagnostics' => $diagnostics,
-        ];
     }
 }

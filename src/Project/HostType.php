@@ -6,7 +6,9 @@ namespace Infocyph\FoundationMcp\Project;
 
 enum HostType: string
 {
-    case Infbyte = 'infbyte';
     case FoundationCustom = 'foundation_custom';
+
+    case Infbyte = 'infbyte';
+
     case Unsupported = 'unsupported';
 }

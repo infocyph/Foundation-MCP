@@ -12,18 +12,19 @@ use Throwable;
 
 final readonly class ProjectTool
 {
-    public const string NAME = 'foundation_project';
     public const string DESCRIPTION = 'Return the authoritative bounded summary of the current Infbyte/Foundation host, Composer/Foundation state, analysis readiness, source roots, modules, and lightweight Git state.';
+
     public const array INPUT_SCHEMA = [
         'type' => 'object',
         'properties' => [],
         'additionalProperties' => false,
     ];
 
+    public const string NAME = 'foundation_project';
+
     public function __construct(
         private ToolServices $services,
-    ) {
-    }
+    ) {}
 
     /** @return array<string,mixed> */
     public function execute(): array
@@ -71,22 +72,6 @@ final readonly class ProjectTool
         ];
     }
 
-    /** @return array<string,mixed> */
-    private function package(InstalledPackage $package): array
-    {
-        return [
-            'name' => $package->name,
-            'declared_constraint' => $package->declaredConstraint,
-            'declared_scope' => $package->declaredScope,
-            'locked_version' => $package->lockedVersion,
-            'installed_version' => $package->installedVersion,
-            'locked_reference' => $package->lockedReference,
-            'installed_reference' => $package->installedReference,
-            'state' => $package->state(),
-            'source_available' => $package->installPath !== null,
-        ];
-    }
-
     /** @return array{ready:bool,phpforge:?string,parser:bool,diagnostics:list<array{code:string,message:string}>} */
     private function analysisReadiness(): array
     {
@@ -108,13 +93,13 @@ final readonly class ProjectTool
         $parser = false;
         if (class_exists(ParserFactory::class)) {
             try {
-                $nodes = (new ParserFactory())->createForNewestSupportedVersion()->parse('<?php final class FoundationMcpToolProbe {}');
+                $nodes = new ParserFactory()->createForNewestSupportedVersion()->parse('<?php final class FoundationMcpToolProbe {}');
                 $parser = is_array($nodes) && $nodes !== [];
             } catch (Throwable $error) {
                 $diagnostics[] = ['code' => 'analysis_backend_incompatible', 'message' => $error->getMessage()];
             }
         }
-        if (!$parser && !array_any($diagnostics, static fn (array $item): bool => $item['code'] === 'analysis_backend_incompatible')) {
+        if (!$parser && !array_any($diagnostics, static fn(array $item): bool => $item['code'] === 'analysis_backend_incompatible')) {
             $diagnostics[] = ['code' => 'analysis_backend_unavailable', 'message' => 'PHP parser capability is unavailable.'];
         }
 
@@ -168,6 +153,22 @@ final readonly class ProjectTool
         }
     }
 
+    /** @return array<string,mixed> */
+    private function package(InstalledPackage $package): array
+    {
+        return [
+            'name' => $package->name,
+            'declared_constraint' => $package->declaredConstraint,
+            'declared_scope' => $package->declaredScope,
+            'locked_version' => $package->lockedVersion,
+            'installed_version' => $package->installedVersion,
+            'locked_reference' => $package->lockedReference,
+            'installed_reference' => $package->installedReference,
+            'state' => $package->state(),
+            'source_available' => $package->installPath !== null,
+        ];
+    }
+
     /** @param list<string> $roots @return list<string> */
     private function relativeRoots(array $roots): array
     {
@@ -180,6 +181,7 @@ final readonly class ProjectTool
         }
 
         sort($result, SORT_STRING);
+
         return array_values(array_unique($result));
     }
 }

@@ -10,8 +10,8 @@ use Throwable;
 
 final readonly class PackagesTool
 {
-    public const string NAME = 'foundation_packages';
     public const string DESCRIPTION = 'Inspect bounded Composer package, dependency, exact locked/installed version, source-reference, direct-scope, and Foundation module ownership information.';
+
     public const array INPUT_SCHEMA = [
         'type' => 'object',
         'properties' => [
@@ -22,10 +22,11 @@ final readonly class PackagesTool
         'additionalProperties' => false,
     ];
 
+    public const string NAME = 'foundation_packages';
+
     public function __construct(
         private ToolServices $services,
-    ) {
-    }
+    ) {}
 
     /** @return array<string,mixed> */
     public function execute(?string $package = null, int $depth = 2, int $limit = 100): array
@@ -43,6 +44,7 @@ final readonly class PackagesTool
 
         if ($package !== '') {
             $installed = $composer->package($package);
+
             return [
                 'mode' => 'package',
                 'package' => $installed === null ? null : $this->full($installed),
@@ -73,6 +75,45 @@ final readonly class PackagesTool
             'modules' => $this->moduleOverview(),
             'diagnostics' => array_slice($composer->diagnostics(), 0, 100),
         ];
+    }
+
+    /** @param array<string,string> $map @return array<string,string> */
+    private function boundedMap(array $map): array
+    {
+        ksort($map, SORT_STRING);
+
+        return array_slice($map, 0, 100, true);
+    }
+
+    private function boundedValue(mixed $value, int $depth = 0): mixed
+    {
+        if ($depth >= 5) {
+            return is_array($value) ? '[TRUNCATED]' : $value;
+        }
+        if (is_string($value)) {
+            $path = str_replace('\\', '/', $value);
+            if (str_starts_with($path, '/') || str_starts_with($path, '//') || preg_match('/^[A-Za-z]:\//', $path) === 1 || in_array('..', explode('/', $path), true)) {
+                return '[DENIED_PATH]';
+            }
+
+            return strlen($value) > 2_048 ? substr($value, 0, 2_048) . '…' : $value;
+        }
+        if (!is_array($value)) {
+            return $value;
+        }
+
+        $result = [];
+        $count = 0;
+        foreach ($value as $key => $item) {
+            if (++$count > 100) {
+                $result['__truncated__'] = true;
+
+                break;
+            }
+            $result[$key] = $this->boundedValue($item, $depth + 1);
+        }
+
+        return $result;
     }
 
     /** @return array<string,mixed> */
@@ -107,63 +148,11 @@ final readonly class PackagesTool
         ];
     }
 
-    /** @param array<string,string> $map @return array<string,string> */
-    private function boundedMap(array $map): array
-    {
-        ksort($map, SORT_STRING);
-        return array_slice($map, 0, 100, true);
-    }
-
-    private function boundedValue(mixed $value, int $depth = 0): mixed
-    {
-        if ($depth >= 5) {
-            return is_array($value) ? '[TRUNCATED]' : $value;
-        }
-        if (is_string($value)) {
-            $path = str_replace('\\', '/', $value);
-            if (str_starts_with($path, '/') || str_starts_with($path, '//') || preg_match('/^[A-Za-z]:\//', $path) === 1 || in_array('..', explode('/', $path), true)) {
-                return '[DENIED_PATH]';
-            }
-            return strlen($value) > 2_048 ? substr($value, 0, 2_048).'…' : $value;
-        }
-        if (!is_array($value)) {
-            return $value;
-        }
-
-        $result = [];
-        $count = 0;
-        foreach ($value as $key => $item) {
-            if (++$count > 100) {
-                $result['__truncated__'] = true;
-                break;
-            }
-            $result[$key] = $this->boundedValue($item, $depth + 1);
-        }
-        return $result;
-    }
-
-    /** @return list<array{name:string,constraint:string}> */
-    private function modulesForPackage(string $package): array
-    {
-        $modules = [];
-        try {
-            foreach ($this->services->modules()->definitions() as $name => $definition) {
-                if (!isset($definition['packages'][$package])) {
-                    continue;
-                }
-                $modules[] = ['name' => $name, 'constraint' => $definition['packages'][$package]];
-            }
-        } catch (Throwable) {
-            return [];
-        }
-        usort($modules, static fn (array $left, array $right): int => $left['name'] <=> $right['name']);
-        return $modules;
-    }
-
     /** @return list<array{name:string,packages:list<string>,built_in:bool}> */
     private function moduleOverview(): array
     {
         $modules = [];
+
         try {
             foreach ($this->services->modules()->definitions() as $name => $definition) {
                 $packages = array_keys($definition['packages']);
@@ -177,6 +166,27 @@ final readonly class PackagesTool
         } catch (Throwable) {
             return [];
         }
+
+        return $modules;
+    }
+
+    /** @return list<array{name:string,constraint:string}> */
+    private function modulesForPackage(string $package): array
+    {
+        $modules = [];
+
+        try {
+            foreach ($this->services->modules()->definitions() as $name => $definition) {
+                if (!isset($definition['packages'][$package])) {
+                    continue;
+                }
+                $modules[] = ['name' => $name, 'constraint' => $definition['packages'][$package]];
+            }
+        } catch (Throwable) {
+            return [];
+        }
+        usort($modules, static fn(array $left, array $right): int => $left['name'] <=> $right['name']);
+
         return $modules;
     }
 }

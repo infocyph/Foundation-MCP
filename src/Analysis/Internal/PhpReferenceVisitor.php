@@ -87,6 +87,52 @@ final class PhpReferenceVisitor extends NodeVisitorAbstract
         return $references;
     }
 
+    private function catchReferences(Stmt\Catch_ $node): void
+    {
+        foreach ($node->types as $type) {
+            $this->reference('type', $this->resolvedName($type), $node->getStartLine(), 'resolved');
+        }
+    }
+
+    private function classConstantReference(Expr\ClassConstFetch $node): void
+    {
+        if ($node->class instanceof Name && $node->name instanceof Node\Identifier) {
+            [$class, $confidence] = $this->classReference($node->class);
+            $this->reference(
+                'class_constant',
+                $class . '::' . $node->name->toString(),
+                $node->getStartLine(),
+                $confidence,
+            );
+
+            return;
+        }
+
+        $this->reference('class_constant', '<dynamic>', $node->getStartLine(), 'dynamic');
+    }
+
+    private function className(Stmt\ClassLike $node): ?string
+    {
+        if ($node->name === null) {
+            return null;
+        }
+
+        $namespaced = $node->namespacedName ?? null;
+
+        return $namespaced instanceof Name ? $namespaced->toString() : $node->name->toString();
+    }
+
+    /** @return array{0:string,1:string} */
+    private function classReference(Name $name): array
+    {
+        return match (strtolower($name->toString())) {
+            'self' => [$this->currentClass() ?? 'self', $this->currentClass() !== null ? 'resolved' : 'lexical'],
+            'static' => [$this->currentClass() ?? 'static', 'lexical'],
+            'parent' => ['parent', 'lexical'],
+            default => [$this->resolvedName($name), 'resolved'],
+        };
+    }
+
     private function classReferences(Stmt\Class_ $node): void
     {
         if ($node->extends !== null) {
@@ -98,11 +144,11 @@ final class PhpReferenceVisitor extends NodeVisitorAbstract
         }
     }
 
-    private function interfaceReferences(Stmt\Interface_ $node): void
+    private function currentClass(): ?string
     {
-        foreach ($node->extends as $interface) {
-            $this->reference('extends', $this->resolvedName($interface), $node->getStartLine(), 'resolved');
-        }
+        $class = end($this->classStack);
+
+        return $class === false ? null : $class;
     }
 
     private function enumReferences(Stmt\Enum_ $node): void
@@ -110,47 +156,6 @@ final class PhpReferenceVisitor extends NodeVisitorAbstract
         foreach ($node->implements as $interface) {
             $this->reference('implements', $this->resolvedName($interface), $node->getStartLine(), 'resolved');
         }
-    }
-
-    private function traitReferences(Stmt\TraitUse $node): void
-    {
-        foreach ($node->traits as $trait) {
-            $this->reference('trait-use', $this->resolvedName($trait), $node->getStartLine(), 'resolved');
-        }
-    }
-
-    private function functionLikeReferences(Stmt\ClassMethod|Stmt\Function_|Expr\Closure|Expr\ArrowFunction $node): void
-    {
-        $this->typedNodeReferences($node->returnType, $node->getStartLine());
-    }
-
-    private function newReference(Expr\New_ $node): void
-    {
-        if ($node->class instanceof Name) {
-            [$target, $confidence] = $this->classReference($node->class);
-            $this->reference('new', $target, $node->getStartLine(), $confidence);
-
-            return;
-        }
-
-        $this->reference('new', '<dynamic>', $node->getStartLine(), 'dynamic');
-    }
-
-    private function staticCallReference(Expr\StaticCall $node): void
-    {
-        if ($node->class instanceof Name && $node->name instanceof Node\Identifier) {
-            [$class, $confidence] = $this->classReference($node->class);
-            $this->reference(
-                'call',
-                $class.'::'.$node->name->toString(),
-                $node->getStartLine(),
-                $confidence,
-            );
-
-            return;
-        }
-
-        $this->reference('call', '<dynamic>', $node->getStartLine(), 'dynamic');
     }
 
     private function functionCallReference(Expr\FuncCall $node): void
@@ -165,76 +170,9 @@ final class PhpReferenceVisitor extends NodeVisitorAbstract
         $this->reference('call', '<dynamic>', $node->getStartLine(), 'dynamic');
     }
 
-    private function methodCallReference(Expr\MethodCall $node): void
+    private function functionLikeReferences(Stmt\ClassMethod|Stmt\Function_|Expr\Closure|Expr\ArrowFunction $node): void
     {
-        if (!$node->name instanceof Node\Identifier) {
-            $this->reference('call', '<dynamic>', $node->getStartLine(), 'dynamic');
-
-            return;
-        }
-
-        $method = $node->name->toString();
-
-        if ($node->var instanceof Expr\Variable && $node->var->name === 'this' && ($class = $this->currentClass()) !== null) {
-            $this->reference('call', $class.'::'.$method, $node->getStartLine(), 'resolved');
-
-            return;
-        }
-
-        $this->reference('call', $method, $node->getStartLine(), 'lexical');
-    }
-
-    private function classConstantReference(Expr\ClassConstFetch $node): void
-    {
-        if ($node->class instanceof Name && $node->name instanceof Node\Identifier) {
-            [$class, $confidence] = $this->classReference($node->class);
-            $this->reference(
-                'class_constant',
-                $class.'::'.$node->name->toString(),
-                $node->getStartLine(),
-                $confidence,
-            );
-
-            return;
-        }
-
-        $this->reference('class_constant', '<dynamic>', $node->getStartLine(), 'dynamic');
-    }
-
-    private function staticPropertyReference(Expr\StaticPropertyFetch $node): void
-    {
-        if ($node->class instanceof Name && $node->name instanceof Node\VarLikeIdentifier) {
-            [$class, $confidence] = $this->classReference($node->class);
-            $this->reference(
-                'property',
-                $class.'::$'.$node->name->toString(),
-                $node->getStartLine(),
-                $confidence,
-            );
-
-            return;
-        }
-
-        $this->reference('property', '<dynamic>', $node->getStartLine(), 'dynamic');
-    }
-
-    private function propertyReference(Expr\PropertyFetch $node): void
-    {
-        if (!$node->name instanceof Node\Identifier) {
-            $this->reference('property', '<dynamic>', $node->getStartLine(), 'dynamic');
-
-            return;
-        }
-
-        $property = $node->name->toString();
-
-        if ($node->var instanceof Expr\Variable && $node->var->name === 'this' && ($class = $this->currentClass()) !== null) {
-            $this->reference('property', $class.'::$'.$property, $node->getStartLine(), 'resolved');
-
-            return;
-        }
-
-        $this->reference('property', $property, $node->getStartLine(), 'lexical');
+        $this->typedNodeReferences($node->returnType, $node->getStartLine());
     }
 
     private function instanceofReference(Expr\Instanceof_ $node): void
@@ -249,10 +187,131 @@ final class PhpReferenceVisitor extends NodeVisitorAbstract
         $this->reference('type', '<dynamic>', $node->getStartLine(), 'dynamic');
     }
 
-    private function catchReferences(Stmt\Catch_ $node): void
+    private function interfaceReferences(Stmt\Interface_ $node): void
     {
-        foreach ($node->types as $type) {
-            $this->reference('type', $this->resolvedName($type), $node->getStartLine(), 'resolved');
+        foreach ($node->extends as $interface) {
+            $this->reference('extends', $this->resolvedName($interface), $node->getStartLine(), 'resolved');
+        }
+    }
+
+    private function methodCallReference(Expr\MethodCall $node): void
+    {
+        if (!$node->name instanceof Node\Identifier) {
+            $this->reference('call', '<dynamic>', $node->getStartLine(), 'dynamic');
+
+            return;
+        }
+
+        $method = $node->name->toString();
+
+        if ($node->var instanceof Expr\Variable && $node->var->name === 'this' && ($class = $this->currentClass()) !== null) {
+            $this->reference('call', $class . '::' . $method, $node->getStartLine(), 'resolved');
+
+            return;
+        }
+
+        $this->reference('call', $method, $node->getStartLine(), 'lexical');
+    }
+
+    /** @return array{0:string,1:string} */
+    private function nameReference(Name $name): array
+    {
+        $resolved = $name->getAttribute('resolvedName');
+
+        if ($resolved instanceof Name) {
+            return [$resolved->toString(), 'resolved'];
+        }
+
+        $namespaced = $name->getAttribute('namespacedName');
+
+        if ($namespaced instanceof Name) {
+            return [$namespaced->toString(), 'lexical'];
+        }
+
+        return [$name->toString(), 'lexical'];
+    }
+
+    private function newReference(Expr\New_ $node): void
+    {
+        if ($node->class instanceof Name) {
+            [$target, $confidence] = $this->classReference($node->class);
+            $this->reference('new', $target, $node->getStartLine(), $confidence);
+
+            return;
+        }
+
+        $this->reference('new', '<dynamic>', $node->getStartLine(), 'dynamic');
+    }
+
+    private function propertyReference(Expr\PropertyFetch $node): void
+    {
+        if (!$node->name instanceof Node\Identifier) {
+            $this->reference('property', '<dynamic>', $node->getStartLine(), 'dynamic');
+
+            return;
+        }
+
+        $property = $node->name->toString();
+
+        if ($node->var instanceof Expr\Variable && $node->var->name === 'this' && ($class = $this->currentClass()) !== null) {
+            $this->reference('property', $class . '::$' . $property, $node->getStartLine(), 'resolved');
+
+            return;
+        }
+
+        $this->reference('property', $property, $node->getStartLine(), 'lexical');
+    }
+
+    private function reference(string $relationship, string $target, int $line, string $confidence): void
+    {
+        $this->references[] = compact('relationship', 'target', 'line', 'confidence');
+    }
+
+    private function resolvedName(Name $name): string
+    {
+        $resolved = $name->getAttribute('resolvedName');
+
+        return $resolved instanceof Name ? $resolved->toString() : $name->toString();
+    }
+
+    private function staticCallReference(Expr\StaticCall $node): void
+    {
+        if ($node->class instanceof Name && $node->name instanceof Node\Identifier) {
+            [$class, $confidence] = $this->classReference($node->class);
+            $this->reference(
+                'call',
+                $class . '::' . $node->name->toString(),
+                $node->getStartLine(),
+                $confidence,
+            );
+
+            return;
+        }
+
+        $this->reference('call', '<dynamic>', $node->getStartLine(), 'dynamic');
+    }
+
+    private function staticPropertyReference(Expr\StaticPropertyFetch $node): void
+    {
+        if ($node->class instanceof Name && $node->name instanceof Node\VarLikeIdentifier) {
+            [$class, $confidence] = $this->classReference($node->class);
+            $this->reference(
+                'property',
+                $class . '::$' . $node->name->toString(),
+                $node->getStartLine(),
+                $confidence,
+            );
+
+            return;
+        }
+
+        $this->reference('property', '<dynamic>', $node->getStartLine(), 'dynamic');
+    }
+
+    private function traitReferences(Stmt\TraitUse $node): void
+    {
+        foreach ($node->traits as $trait) {
+            $this->reference('trait-use', $this->resolvedName($trait), $node->getStartLine(), 'resolved');
         }
     }
 
@@ -275,64 +334,5 @@ final class PhpReferenceVisitor extends NodeVisitorAbstract
                 $this->typedNodeReferences($item, $line);
             }
         }
-    }
-
-    private function className(Stmt\ClassLike $node): ?string
-    {
-        if ($node->name === null) {
-            return null;
-        }
-
-        $namespaced = $node->namespacedName ?? null;
-
-        return $namespaced instanceof Name ? $namespaced->toString() : $node->name->toString();
-    }
-
-    private function currentClass(): ?string
-    {
-        $class = end($this->classStack);
-
-        return $class === false ? null : $class;
-    }
-
-    /** @return array{0:string,1:string} */
-    private function classReference(Name $name): array
-    {
-        return match (strtolower($name->toString())) {
-            'self' => [$this->currentClass() ?? 'self', $this->currentClass() !== null ? 'resolved' : 'lexical'],
-            'static' => [$this->currentClass() ?? 'static', 'lexical'],
-            'parent' => ['parent', 'lexical'],
-            default => [$this->resolvedName($name), 'resolved'],
-        };
-    }
-
-    /** @return array{0:string,1:string} */
-    private function nameReference(Name $name): array
-    {
-        $resolved = $name->getAttribute('resolvedName');
-
-        if ($resolved instanceof Name) {
-            return [$resolved->toString(), 'resolved'];
-        }
-
-        $namespaced = $name->getAttribute('namespacedName');
-
-        if ($namespaced instanceof Name) {
-            return [$namespaced->toString(), 'lexical'];
-        }
-
-        return [$name->toString(), 'lexical'];
-    }
-
-    private function resolvedName(Name $name): string
-    {
-        $resolved = $name->getAttribute('resolvedName');
-
-        return $resolved instanceof Name ? $resolved->toString() : $name->toString();
-    }
-
-    private function reference(string $relationship, string $target, int $line, string $confidence): void
-    {
-        $this->references[] = compact('relationship', 'target', 'line', 'confidence');
     }
 }

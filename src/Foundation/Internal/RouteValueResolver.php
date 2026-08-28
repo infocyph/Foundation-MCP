@@ -9,22 +9,6 @@ use RuntimeException;
 
 final readonly class RouteValueResolver
 {
-    /** @return array<int|string, Node\Arg> */
-    public function callArgs(Node\Expr $expr): array
-    {
-        if (!$expr instanceof Node\Expr\MethodCall && !$expr instanceof Node\Expr\StaticCall) {
-            return [];
-        }
-
-        return $this->indexArgs($expr->args);
-    }
-
-    /** @return array<int|string, Node\Arg> */
-    public function attributeArgs(Node\Attribute $attribute): array
-    {
-        return $this->indexArgs($attribute->args);
-    }
-
     /** @param array<int|string, Node\Arg> $args */
     public function arg(array $args, int $position, string $name): ?Node\Expr
     {
@@ -33,38 +17,25 @@ final readonly class RouteValueResolver
         return $arg instanceof Node\Arg ? $arg->value : null;
     }
 
-    public function handler(Node\Expr $expr): ?string
+    /** @return array<int|string, Node\Arg> */
+    public function attributeArgs(Node\Attribute $attribute): array
     {
-        if ($expr instanceof Node\Expr\Array_) {
-            $items = $expr->items;
-            $class = isset($items[0]) && $items[0] instanceof Node\Expr\ArrayItem
-                ? $this->classString($items[0]->value)
-                : null;
-            $method = isset($items[1]) && $items[1] instanceof Node\Expr\ArrayItem
-                ? $this->stringValue($items[1]->value)
-                : null;
+        return $this->indexArgs($attribute->args);
+    }
 
-            return $class !== null && $method !== null ? $class.'::'.$method : null;
+    public function attributeName(Node\Attribute $attribute): string
+    {
+        return $this->resolvedName($attribute->name);
+    }
+
+    /** @return array<int|string, Node\Arg> */
+    public function callArgs(Node\Expr $expr): array
+    {
+        if (!$expr instanceof Node\Expr\MethodCall && !$expr instanceof Node\Expr\StaticCall) {
+            return [];
         }
 
-        if (
-            $expr instanceof Node\Expr\StaticCall
-            && $expr->isFirstClassCallable()
-            && $expr->class instanceof Node\Name
-            && $expr->name instanceof Node\Identifier
-        ) {
-            return $this->resolvedName($expr->class).'::'.$expr->name->toString();
-        }
-
-        if ($expr instanceof Node\Expr\FuncCall && $expr->isFirstClassCallable() && $expr->name instanceof Node\Name) {
-            return $this->resolvedName($expr->name);
-        }
-
-        if ($expr instanceof Node\Expr\Closure || $expr instanceof Node\Expr\ArrowFunction) {
-            return 'closure';
-        }
-
-        return $this->stringValue($expr);
+        return $this->indexArgs($expr->args);
     }
 
     public function classString(Node\Expr $expr): ?string
@@ -81,7 +52,51 @@ final readonly class RouteValueResolver
         return $this->stringValue($expr);
     }
 
-    public function stringValue(Node\Expr $expr): ?string
+    public function handler(Node\Expr $expr): ?string
+    {
+        if ($expr instanceof Node\Expr\Array_) {
+            $items = $expr->items;
+            $class = isset($items[0]) && $items[0] instanceof Node\Expr\ArrayItem
+                ? $this->classString($items[0]->value)
+                : null;
+            $method = isset($items[1]) && $items[1] instanceof Node\Expr\ArrayItem
+                ? $this->stringValue($items[1]->value)
+                : null;
+
+            return $class !== null && $method !== null ? $class . '::' . $method : null;
+        }
+
+        if (
+            $expr instanceof Node\Expr\StaticCall
+            && $expr->isFirstClassCallable()
+            && $expr->class instanceof Node\Name
+            && $expr->name instanceof Node\Identifier
+        ) {
+            return $this->resolvedName($expr->class) . '::' . $expr->name->toString();
+        }
+
+        if ($expr instanceof Node\Expr\FuncCall && $expr->isFirstClassCallable() && $expr->name instanceof Node\Name) {
+            return $this->resolvedName($expr->name);
+        }
+
+        if ($expr instanceof Node\Expr\Closure || $expr instanceof Node\Expr\ArrowFunction) {
+            return 'closure';
+        }
+
+        return $this->stringValue($expr);
+    }
+
+    public function joinPath(?string $prefix, string $path): ?string
+    {
+        if ($prefix === null) {
+            return null;
+        }
+
+        return '/' . ltrim(trim($prefix, '/') . '/' . ltrim($path, '/'), '/');
+    }
+
+    /** @return array<array-key,mixed>|null */
+    public function literalArrayValue(Node\Expr $expr): ?array
     {
         try {
             $value = $this->literalValue($expr);
@@ -89,7 +104,34 @@ final readonly class RouteValueResolver
             return null;
         }
 
-        return is_string($value) ? $value : null;
+        return is_array($value) ? $value : null;
+    }
+
+    /** @return list<string> */
+    public function methodList(Node\Expr $expr): array
+    {
+        $single = $this->stringValue($expr);
+        if ($single !== null) {
+            return [strtoupper($single)];
+        }
+
+        $array = $this->literalArrayValue($expr);
+        $list = $this->stringList($array);
+
+        return $list === null ? [] : array_values(array_map(strtoupper(...), $list));
+    }
+
+    /** @return list<string>|null */
+    public function middlewareValue(Node\Expr $expr): ?array
+    {
+        $value = $this->literalArrayValue($expr);
+
+        return $this->stringList($value);
+    }
+
+    public function nullableString(mixed $value): ?string
+    {
+        return $value === null || is_string($value) ? $value : null;
     }
 
     public function nullableStringExpr(Node\Expr $expr): ?string
@@ -103,21 +145,11 @@ final readonly class RouteValueResolver
         return $value === null || is_string($value) ? $value : null;
     }
 
-    public function nullableString(mixed $value): ?string
+    public function resolvedName(Node\Name $name): string
     {
-        return $value === null || is_string($value) ? $value : null;
-    }
+        $resolved = $name->getAttribute('resolvedName');
 
-    /** @return array<array-key,mixed>|null */
-    public function literalArrayValue(Node\Expr $expr): ?array
-    {
-        try {
-            $value = $this->literalValue($expr);
-        } catch (RuntimeException) {
-            return null;
-        }
-
-        return is_array($value) ? $value : null;
+        return $resolved instanceof Node\Name ? $resolved->toString() : $name->toString();
     }
 
     /**
@@ -147,28 +179,6 @@ final readonly class RouteValueResolver
         $aliases = is_string($aliasValue) ? [$aliasValue] : ($this->stringList($aliasValue) ?? []);
 
         return [$name, $middleware, $aliases, $value, false];
-    }
-
-    /** @return list<string>|null */
-    public function middlewareValue(Node\Expr $expr): ?array
-    {
-        $value = $this->literalArrayValue($expr);
-
-        return $this->stringList($value);
-    }
-
-    /** @return list<string> */
-    public function methodList(Node\Expr $expr): array
-    {
-        $single = $this->stringValue($expr);
-        if ($single !== null) {
-            return [strtoupper($single)];
-        }
-
-        $array = $this->literalArrayValue($expr);
-        $list = $this->stringList($array);
-
-        return $list === null ? [] : array_values(array_map('strtoupper', $list));
     }
 
     /** @return list<string>|null */
@@ -206,13 +216,15 @@ final readonly class RouteValueResolver
         return $map;
     }
 
-    public function joinPath(?string $prefix, string $path): ?string
+    public function stringValue(Node\Expr $expr): ?string
     {
-        if ($prefix === null) {
+        try {
+            $value = $this->literalValue($expr);
+        } catch (RuntimeException) {
             return null;
         }
 
-        return '/'.ltrim(trim($prefix, '/').'/'.ltrim($path, '/'), '/');
+        return is_string($value) ? $value : null;
     }
 
     /** @param list<string> $values @return list<string> */
@@ -220,23 +232,34 @@ final readonly class RouteValueResolver
     {
         $values = array_values(array_unique(array_filter(
             $values,
-            static fn (mixed $value): bool => is_string($value) && $value !== '',
+            static fn(mixed $value): bool => is_string($value) && $value !== '',
         )));
         sort($values, SORT_STRING);
 
         return $values;
     }
 
-    public function attributeName(Node\Attribute $attribute): string
+    private function classConstantValue(Node\Expr\ClassConstFetch $expr): string
     {
-        return $this->resolvedName($attribute->name);
+        if (
+            !$expr->class instanceof Node\Name
+            || !$expr->name instanceof Node\Identifier
+            || strtolower($expr->name->toString()) !== 'class'
+        ) {
+            throw new RuntimeException('Unsupported route class constant.');
+        }
+
+        return $this->resolvedName($expr->class);
     }
 
-    public function resolvedName(Node\Name $name): string
+    private function constantValue(Node\Expr\ConstFetch $expr): ?bool
     {
-        $resolved = $name->getAttribute('resolvedName');
-
-        return $resolved instanceof Node\Name ? $resolved->toString() : $name->toString();
+        return match (strtolower($expr->name->toString())) {
+            'true' => true,
+            'false' => false,
+            'null' => null,
+            default => throw new RuntimeException('Unsupported route constant.'),
+        };
     }
 
     /** @param list<Node\Arg> $raw @return array<int|string,Node\Arg> */
@@ -253,43 +276,6 @@ final readonly class RouteValueResolver
         return $args;
     }
 
-    private function literalValue(Node\Expr $expr): mixed
-    {
-        return match (true) {
-            $expr instanceof Node\Scalar\String_ => $expr->value,
-            $expr instanceof Node\Scalar\Int_ => $expr->value,
-            $expr instanceof Node\Scalar\Float_ => $expr->value,
-            $expr instanceof Node\Expr\Array_ => $this->literalArray($expr),
-            $expr instanceof Node\Expr\ConstFetch => $this->constantValue($expr),
-            $expr instanceof Node\Expr\ClassConstFetch => $this->classConstantValue($expr),
-            $expr instanceof Node\Expr\BinaryOp\Concat => (string) $this->literalValue($expr->left).(string) $this->literalValue($expr->right),
-            default => throw new RuntimeException('Non-literal route expression.'),
-        };
-    }
-
-    private function constantValue(Node\Expr\ConstFetch $expr): bool|null
-    {
-        return match (strtolower($expr->name->toString())) {
-            'true' => true,
-            'false' => false,
-            'null' => null,
-            default => throw new RuntimeException('Unsupported route constant.'),
-        };
-    }
-
-    private function classConstantValue(Node\Expr\ClassConstFetch $expr): string
-    {
-        if (
-            !$expr->class instanceof Node\Name
-            || !$expr->name instanceof Node\Identifier
-            || strtolower($expr->name->toString()) !== 'class'
-        ) {
-            throw new RuntimeException('Unsupported route class constant.');
-        }
-
-        return $this->resolvedName($expr->class);
-    }
-
     /** @return array<array-key,mixed> */
     private function literalArray(Node\Expr\Array_ $array): array
     {
@@ -302,6 +288,7 @@ final readonly class RouteValueResolver
             $value = $this->literalValue($item->value);
             if ($item->key === null) {
                 $result[] = $value;
+
                 continue;
             }
 
@@ -313,5 +300,19 @@ final readonly class RouteValueResolver
         }
 
         return $result;
+    }
+
+    private function literalValue(Node\Expr $expr): mixed
+    {
+        return match (true) {
+            $expr instanceof Node\Scalar\String_ => $expr->value,
+            $expr instanceof Node\Scalar\Int_ => $expr->value,
+            $expr instanceof Node\Scalar\Float_ => $expr->value,
+            $expr instanceof Node\Expr\Array_ => $this->literalArray($expr),
+            $expr instanceof Node\Expr\ConstFetch => $this->constantValue($expr),
+            $expr instanceof Node\Expr\ClassConstFetch => $this->classConstantValue($expr),
+            $expr instanceof Node\Expr\BinaryOp\Concat => $this->literalValue($expr->left) . $this->literalValue($expr->right),
+            default => throw new RuntimeException('Non-literal route expression.'),
+        };
     }
 }

@@ -8,8 +8,8 @@ use InvalidArgumentException;
 
 final readonly class ReadTool
 {
-    public const string NAME = 'foundation_read';
     public const string DESCRIPTION = 'Read a bounded, redacted line range from an approved project file, installed Foundation file, or one explicitly selected installed package.';
+
     public const array INPUT_SCHEMA = [
         'type' => 'object',
         'properties' => [
@@ -27,10 +27,11 @@ final readonly class ReadTool
         'additionalProperties' => false,
     ];
 
+    public const string NAME = 'foundation_read';
+
     public function __construct(
         private ToolServices $services,
-    ) {
-    }
+    ) {}
 
     /** @return array<string,mixed> */
     public function execute(
@@ -59,6 +60,7 @@ final readonly class ReadTool
         if ($package === '') {
             throw new InvalidArgumentException('Package read scope requires an explicit package name.');
         }
+
         return $package;
     }
 }

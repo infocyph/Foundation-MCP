@@ -27,8 +27,10 @@ use PhpBench\Attributes\Warmup;
 #[AfterMethods('tearDown')]
 final class FoundationMcpBench
 {
-    private string $root = '';
     private Project $project;
+
+    private string $root = '';
+
     private ToolServices $services;
 
     public function setUp(): void
@@ -62,14 +64,9 @@ final class FoundationMcpBench
         TempProject::remove($this->root);
     }
 
-    public function benchServerConstruction(): void
+    public function benchDependencyGraph(): void
     {
-        (new ServerFactory($this->project, gitEnabled: false))->create();
-    }
-
-    public function benchProjectSummary(): void
-    {
-        (new ProjectTool($this->services))->execute();
+        $this->services->composer()->graph();
     }
 
     public function benchExactSymbolLookup(): void
@@ -77,23 +74,28 @@ final class FoundationMcpBench
         (new SymbolTool($this->services))->execute('App\\Service');
     }
 
+    public function benchFileImpact(): void
+    {
+        (new ImpactTool($this->services))->execute('file', 'app/Service.php', 100);
+    }
+
+    public function benchProjectSummary(): void
+    {
+        (new ProjectTool($this->services))->execute();
+    }
+
     public function benchSearch(): void
     {
         (new SearchTool($this->services))->execute('Service', 'project', 'symbol', null, 20);
     }
 
+    public function benchServerConstruction(): void
+    {
+        (new ServerFactory($this->project, gitEnabled: false))->create();
+    }
+
     public function benchUsages(): void
     {
         (new UsagesTool($this->services))->execute('App\\Service', null, null, 100);
-    }
-
-    public function benchDependencyGraph(): void
-    {
-        $this->services->composer()->graph();
-    }
-
-    public function benchFileImpact(): void
-    {
-        (new ImpactTool($this->services))->execute('file', 'app/Service.php', 100);
     }
 }

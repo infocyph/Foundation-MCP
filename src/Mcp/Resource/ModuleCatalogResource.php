@@ -10,8 +10,7 @@ final readonly class ModuleCatalogResource
 {
     public function __construct(
         private ToolServices $services,
-    ) {
-    }
+    ) {}
 
     public function execute(): string
     {

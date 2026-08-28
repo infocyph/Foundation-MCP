@@ -30,8 +30,7 @@ final readonly class InstalledPackage
         public array $provide,
         public array $replace,
         public array $conflict,
-    ) {
-    }
+    ) {}
 
     public function direct(): bool
     {

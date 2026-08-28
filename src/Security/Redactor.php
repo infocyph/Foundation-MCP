@@ -6,7 +6,7 @@ namespace Infocyph\FoundationMcp\Security;
 
 final class Redactor
 {
-    private const SECRET_NAME = 'password|secret|token|api[_-]?key|private[_-]?key|authorization|cookie|credential|dsn';
+    private const string SECRET_NAME = 'password|secret|token|api[_-]?key|private[_-]?key|authorization|cookie|credential|dsn';
 
     public function redact(string $content): string
     {
@@ -29,13 +29,13 @@ final class Redactor
         ) ?? $content;
 
         $content = preg_replace_callback(
-            '~(?im)(\b(?:'.self::SECRET_NAME.')\b\s*(?:=>|=|:)\s*)(["\'])([^"\']*)(["\'])~',
-            static fn (array $match): string => $match[1].$match[2].'[REDACTED]'.$match[4],
+            '~(?im)(\b(?:' . self::SECRET_NAME . ')\b\s*(?:=>|=|:)\s*)(["\'])([^"\']*)(["\'])~',
+            static fn(array $match): string => $match[1] . $match[2] . '[REDACTED]' . $match[4],
             $content,
         ) ?? $content;
 
         $content = preg_replace(
-            '~(?im)(\b(?:'.self::SECRET_NAME.')\b\s*(?:=>|=|:)\s*)(?!["\'])([^\s,;#]+)~',
+            '~(?im)(\b(?:' . self::SECRET_NAME . ')\b\s*(?:=>|=|:)\s*)(?!["\'])([^\s,;#]+)~',
             '$1[REDACTED]',
             $content,
         ) ?? $content;

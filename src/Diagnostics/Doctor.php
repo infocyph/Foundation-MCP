@@ -22,8 +22,7 @@ final readonly class Doctor
     public function __construct(
         private ?string $root = null,
         private bool $gitEnabled = true,
-    ) {
-    }
+    ) {}
 
     /** @return list<array{name:string,ok:bool,detail:string}> */
     public function checks(): array
@@ -37,8 +36,8 @@ final readonly class Doctor
         ];
 
         try {
-            $root = (new ProjectLocator())->locate($this->root);
-            $project = (new ProjectDetector())->detect($root);
+            $root = new ProjectLocator()->locate($this->root);
+            $project = new ProjectDetector()->detect($root);
             $checks[] = $this->projectCheck($project);
 
             if ($project->supported()) {
@@ -63,37 +62,10 @@ final readonly class Doctor
         $failed = false;
         foreach ($this->checks() as $check) {
             $failed = $failed || !$check['ok'];
-            fwrite(STDERR, sprintf("[%s] %s: %s%s", $check['ok'] ? 'OK' : 'FAIL', $check['name'], $check['detail'], PHP_EOL));
+            fwrite(STDERR, sprintf('[%s] %s: %s%s', $check['ok'] ? 'OK' : 'FAIL', $check['name'], $check['detail'], PHP_EOL));
         }
+
         return $failed ? 1 : 0;
-    }
-
-    /** @return array{name:string,ok:bool,detail:string} */
-    private function phpCheck(): array
-    {
-        $ok = PHP_VERSION_ID >= 80400;
-        return ['name' => 'PHP', 'ok' => $ok, 'detail' => PHP_VERSION.($ok ? '' : ' (8.4+ required)')];
-    }
-
-    /** @return array{name:string,ok:bool,detail:string} */
-    private function packageCheck(string $package, string $label): array
-    {
-        try {
-            $installed = InstalledVersions::isInstalled($package);
-            $version = $installed
-                ? InstalledVersions::getPrettyVersion($package) ?? InstalledVersions::getVersion($package) ?? 'installed'
-                : 'not installed';
-        } catch (Throwable $exception) {
-            return ['name' => $label, 'ok' => false, 'detail' => 'Composer metadata unavailable: '.$exception->getMessage()];
-        }
-
-        return ['name' => $label, 'ok' => $installed, 'detail' => $version];
-    }
-
-    /** @return array{name:string,ok:bool,detail:string} */
-    private function projectCheck(Project $project): array
-    {
-        return ['name' => 'Project detection', 'ok' => $project->supported(), 'detail' => $project->hostType->value];
     }
 
     /** @return array{name:string,ok:bool,detail:string} */
@@ -102,7 +74,7 @@ final readonly class Doctor
         $diagnostics = $composer->diagnostics();
         $ok = $composer->lockPresent() && $composer->installedMetadataPresent() && $diagnostics === [];
         $detail = $ok
-            ? count($composer->packages()).' packages; lock/install state aligned'
+            ? count($composer->packages()) . ' packages; lock/install state aligned'
             : implode(', ', array_slice(array_column($diagnostics, 'code'), 0, 4));
 
         return ['name' => 'Composer state', 'ok' => $ok, 'detail' => $detail !== '' ? $detail : 'Composer metadata incomplete'];
@@ -133,22 +105,60 @@ final readonly class Doctor
     }
 
     /** @return array{name:string,ok:bool,detail:string} */
+    private function gitCheck(Project $project): array
+    {
+        if (!$this->gitEnabled) {
+            return ['name' => 'Git inspection', 'ok' => true, 'detail' => 'disabled by --no-git'];
+        }
+
+        try {
+            $available = new GitRunner($project)->available();
+        } catch (Throwable $exception) {
+            return ['name' => 'Git inspection', 'ok' => false, 'detail' => $exception->getMessage()];
+        }
+
+        return ['name' => 'Git inspection', 'ok' => $available, 'detail' => $available ? 'read-only Git boundary available' : 'Git is unavailable'];
+    }
+
+    /** @return array{name:string,ok:bool,detail:string} */
     private function moduleCatalogCheck(Project $project, ComposerInspector $composer): array
     {
         try {
-            $modules = (new ModuleCatalogReader($project, $composer))->definitions();
+            $modules = new ModuleCatalogReader($project, $composer)->definitions();
         } catch (Throwable $exception) {
             return ['name' => 'Foundation ModuleCatalog', 'ok' => false, 'detail' => $exception->getMessage()];
         }
 
-        return ['name' => 'Foundation ModuleCatalog', 'ok' => $modules !== [], 'detail' => count($modules).' purpose-first modules parsed statically'];
+        return ['name' => 'Foundation ModuleCatalog', 'ok' => $modules !== [], 'detail' => count($modules) . ' purpose-first modules parsed statically'];
     }
 
     /** @return array{name:string,ok:bool,detail:string} */
-    private function sourceRootsCheck(Project $project): array
+    private function packageCheck(string $package, string $label): array
     {
-        $roots = SourceRoots::discover($project);
-        return ['name' => 'Source roots', 'ok' => $roots->all() !== [], 'detail' => count($roots->all()).' approved roots'];
+        try {
+            $installed = InstalledVersions::isInstalled($package);
+            $version = $installed
+                ? InstalledVersions::getPrettyVersion($package) ?? InstalledVersions::getVersion($package) ?? 'installed'
+                : 'not installed';
+        } catch (Throwable $exception) {
+            return ['name' => $label, 'ok' => false, 'detail' => 'Composer metadata unavailable: ' . $exception->getMessage()];
+        }
+
+        return ['name' => $label, 'ok' => $installed, 'detail' => $version];
+    }
+
+    /** @return array{name:string,ok:bool,detail:string} */
+    private function phpCheck(): array
+    {
+        $ok = PHP_VERSION_ID >= 80400;
+
+        return ['name' => 'PHP', 'ok' => $ok, 'detail' => PHP_VERSION . ($ok ? '' : ' (8.4+ required)')];
+    }
+
+    /** @return array{name:string,ok:bool,detail:string} */
+    private function projectCheck(Project $project): array
+    {
+        return ['name' => 'Project detection', 'ok' => $project->supported(), 'detail' => $project->hostType->value];
     }
 
     /** @return array{name:string,ok:bool,detail:string} */
@@ -167,34 +177,26 @@ final readonly class Doctor
             return ['name' => 'Path/security policy', 'ok' => false, 'detail' => $exception->getMessage()];
         }
 
-        return ['name' => 'Path/security policy', 'ok' => $ok, 'detail' => $ok ? count($paths->packageRoots()).' package roots approved' : 'secret policy invariant failed'];
-    }
-
-    /** @return array{name:string,ok:bool,detail:string} */
-    private function gitCheck(Project $project): array
-    {
-        if (!$this->gitEnabled) {
-            return ['name' => 'Git inspection', 'ok' => true, 'detail' => 'disabled by --no-git'];
-        }
-
-        try {
-            $available = (new GitRunner($project))->available();
-        } catch (Throwable $exception) {
-            return ['name' => 'Git inspection', 'ok' => false, 'detail' => $exception->getMessage()];
-        }
-
-        return ['name' => 'Git inspection', 'ok' => $available, 'detail' => $available ? 'read-only Git boundary available' : 'Git is unavailable'];
+        return ['name' => 'Path/security policy', 'ok' => $ok, 'detail' => $ok ? count($paths->packageRoots()) . ' package roots approved' : 'secret policy invariant failed'];
     }
 
     /** @return array{name:string,ok:bool,detail:string} */
     private function serverCheck(Project $project): array
     {
         try {
-            (new ServerFactory($project, $this->gitEnabled))->create();
+            new ServerFactory($project, $this->gitEnabled)->create();
         } catch (Throwable $exception) {
             return ['name' => 'MCP server surface', 'ok' => false, 'detail' => $exception->getMessage()];
         }
 
         return ['name' => 'MCP server surface', 'ok' => true, 'detail' => 'explicit tools/resources build successfully'];
+    }
+
+    /** @return array{name:string,ok:bool,detail:string} */
+    private function sourceRootsCheck(Project $project): array
+    {
+        $roots = SourceRoots::discover($project);
+
+        return ['name' => 'Source roots', 'ok' => $roots->all() !== [], 'detail' => count($roots->all()) . ' approved roots'];
     }
 }

@@ -37,13 +37,14 @@ use Throwable;
 final class SymbolIndex
 {
     private readonly PhpAnalyzer $analyzer;
-    private readonly SourceFileFinder $files;
 
-    /** @var array<string, IndexedFile> */
-    private array $project = [];
+    private readonly SourceFileFinder $files;
 
     /** @var array<string, array<string, IndexedFile>> */
     private array $packages = [];
+
+    /** @var array<string, IndexedFile> */
+    private array $project = [];
 
     public function __construct(
         Project $project,
@@ -53,53 +54,6 @@ final class SymbolIndex
     ) {
         $this->analyzer = $analyzer ?? new PhpAnalyzer($project, $composer);
         $this->files = $files ?? new SourceFileFinder($project, $composer);
-    }
-
-    /** @return list<IndexedSymbol> */
-    public function project(): array
-    {
-        $manifest = $this->files->project();
-        $this->refresh($this->project, $manifest, null);
-
-        return $this->symbols($this->project);
-    }
-
-    /** @return list<IndexedSymbol> */
-    public function package(string $package): array
-    {
-        $manifest = $this->files->package($package);
-        $index = $this->packages[$package] ?? [];
-        $this->refresh($index, $manifest, $package);
-        $this->packages[$package] = $index;
-
-        return $this->symbols($index);
-    }
-
-    /** @return list<IndexedSymbol> */
-    public function find(string $symbol, ?string $package = null): array
-    {
-        $needle = ltrim(trim($symbol), '\\');
-
-        if ($needle === '') {
-            return [];
-        }
-
-        $symbols = $package === null ? $this->project() : $this->package($package);
-        $exact = array_values(array_filter(
-            $symbols,
-            static fn (array $entry): bool => $entry['symbol'] === $needle,
-        ));
-
-        if ($exact !== []) {
-            return $exact;
-        }
-
-        $folded = strtolower($needle);
-
-        return array_values(array_filter(
-            $symbols,
-            static fn (array $entry): bool => strtolower($entry['symbol']) === $folded,
-        ));
     }
 
     /** @return list<IndexDiagnostic> */
@@ -119,7 +73,7 @@ final class SymbolIndex
             array_push($diagnostics, ...$file['diagnostics']);
         }
 
-        usort($diagnostics, static fn (array $left, array $right): int => [
+        usort($diagnostics, static fn(array $left, array $right): int => [
             $left['path'],
             $left['line'] ?? 0,
             $left['code'],
@@ -132,25 +86,51 @@ final class SymbolIndex
         return $diagnostics;
     }
 
-    /**
-     * @param array<string, IndexedFile> $index
-     * @param array<string, string> $manifest
-     */
-    private function refresh(array &$index, array $manifest, ?string $package): void
+    /** @return list<IndexedSymbol> */
+    public function find(string $symbol, ?string $package = null): array
     {
-        foreach (array_keys($index) as $path) {
-            if (!isset($manifest[$path])) {
-                unset($index[$path]);
-            }
+        $needle = ltrim(trim($symbol), '\\');
+
+        if ($needle === '') {
+            return [];
         }
 
-        foreach ($manifest as $path => $state) {
-            if (($index[$path]['state'] ?? null) === $state) {
-                continue;
-            }
+        $symbols = $package === null ? $this->project() : $this->package($package);
+        $exact = array_values(array_filter(
+            $symbols,
+            static fn(array $entry): bool => $entry['symbol'] === $needle,
+        ));
 
-            $index[$path] = $this->analyze($path, $state, $package);
+        if ($exact !== []) {
+            return $exact;
         }
+
+        $folded = strtolower($needle);
+
+        return array_values(array_filter(
+            $symbols,
+            static fn(array $entry): bool => strtolower($entry['symbol']) === $folded,
+        ));
+    }
+
+    /** @return list<IndexedSymbol> */
+    public function package(string $package): array
+    {
+        $manifest = $this->files->package($package);
+        $index = $this->packages[$package] ?? [];
+        $this->refresh($index, $manifest, $package);
+        $this->packages[$package] = $index;
+
+        return $this->symbols($index);
+    }
+
+    /** @return list<IndexedSymbol> */
+    public function project(): array
+    {
+        $manifest = $this->files->project();
+        $this->refresh($this->project, $manifest, null);
+
+        return $this->symbols($this->project);
     }
 
     /** @return IndexedFile */
@@ -208,6 +188,27 @@ final class SymbolIndex
 
     /**
      * @param array<string, IndexedFile> $index
+     * @param array<string, string> $manifest
+     */
+    private function refresh(array &$index, array $manifest, ?string $package): void
+    {
+        foreach (array_keys($index) as $path) {
+            if (!isset($manifest[$path])) {
+                unset($index[$path]);
+            }
+        }
+
+        foreach ($manifest as $path => $state) {
+            if (($index[$path]['state'] ?? null) === $state) {
+                continue;
+            }
+
+            $index[$path] = $this->analyze($path, $state, $package);
+        }
+    }
+
+    /**
+     * @param array<string, IndexedFile> $index
      * @return list<IndexedSymbol>
      */
     private function symbols(array $index): array
@@ -218,7 +219,7 @@ final class SymbolIndex
             array_push($symbols, ...$file['symbols']);
         }
 
-        usort($symbols, static fn (array $left, array $right): int => [
+        usort($symbols, static fn(array $left, array $right): int => [
             strtolower($left['symbol']),
             $left['symbol'],
             $left['path'],

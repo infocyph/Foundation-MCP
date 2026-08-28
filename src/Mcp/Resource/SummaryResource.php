@@ -11,11 +11,10 @@ final readonly class SummaryResource
 {
     public function __construct(
         private ToolServices $services,
-    ) {
-    }
+    ) {}
 
     public function execute(): string
     {
-        return ResourcePayload::json((new ProjectTool($this->services))->execute());
+        return ResourcePayload::json(new ProjectTool($this->services)->execute());
     }
 }

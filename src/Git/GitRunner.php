@@ -33,7 +33,28 @@ final readonly class GitRunner
         }
 
         $result = $this->run(['--version'], allowFailure: true);
+
         return $result['exit'] === 0 && str_starts_with(trim($result['stdout']), 'git version ');
+    }
+
+    /** @return array{exit:int,stdout:string,stderr:string} */
+    public function branch(): array
+    {
+        return $this->run(['symbolic-ref', '--quiet', '--short', 'HEAD'], allowFailure: true);
+    }
+
+    /** @return array{exit:int,stdout:string,stderr:string} */
+    public function head(): array
+    {
+        return $this->run(['rev-parse', '--verify', 'HEAD'], allowFailure: true);
+    }
+
+    public function headFile(string $path): ?string
+    {
+        $path = $this->safeRelativePath($path);
+        $result = $this->run(['show', '--no-ext-diff', '--format=', 'HEAD:' . $path], allowFailure: true);
+
+        return $result['exit'] === 0 ? $result['stdout'] : null;
     }
 
     /** @return array{exit:int,stdout:string,stderr:string} */
@@ -43,31 +64,13 @@ final readonly class GitRunner
     }
 
     /** @return array{exit:int,stdout:string,stderr:string} */
-    public function head(): array
-    {
-        return $this->run(['rev-parse', '--verify', 'HEAD'], allowFailure: true);
-    }
-
-    /** @return array{exit:int,stdout:string,stderr:string} */
-    public function branch(): array
-    {
-        return $this->run(['symbolic-ref', '--quiet', '--short', 'HEAD'], allowFailure: true);
-    }
-
-    public function headFile(string $path): ?string
-    {
-        $path = $this->safeRelativePath($path);
-        $result = $this->run(['show', '--no-ext-diff', '--format=', 'HEAD:'.$path], allowFailure: true);
-        return $result['exit'] === 0 ? $result['stdout'] : null;
-    }
-
-    /** @return array{exit:int,stdout:string,stderr:string} */
     private function run(array $arguments, bool $allowFailure = false): array
     {
         if (!$this->enabled) {
             if ($allowFailure) {
                 return ['exit' => 127, 'stdout' => '', 'stderr' => 'Git inspection is disabled.'];
             }
+
             throw new RuntimeException('Git inspection is disabled.');
         }
 
@@ -82,6 +85,7 @@ final readonly class GitRunner
             if ($allowFailure) {
                 return ['exit' => 127, 'stdout' => '', 'stderr' => 'Git is unavailable.'];
             }
+
             throw new RuntimeException('Git is unavailable.');
         }
         fclose($pipes[0]);
@@ -97,8 +101,9 @@ final readonly class GitRunner
             throw new RuntimeException('Git output exceeds the inspection limit.');
         }
         if (!$allowFailure && $exit !== 0) {
-            throw new RuntimeException('Read-only Git inspection failed: '.trim($stderr));
+            throw new RuntimeException('Read-only Git inspection failed: ' . trim($stderr));
         }
+
         return ['exit' => $exit, 'stdout' => $stdout, 'stderr' => $stderr];
     }
 
@@ -126,6 +131,7 @@ final readonly class GitRunner
         }
         $normalized = implode('/', $parts);
         $this->secrets->assertAllowed($normalized);
+
         return $normalized;
     }
 }

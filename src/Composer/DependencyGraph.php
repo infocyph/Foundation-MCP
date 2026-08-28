@@ -17,20 +17,7 @@ final readonly class DependencyGraph
         private array $edges,
         private array $runtimeDirect,
         private array $devDirect,
-    ) {
-    }
-
-    /** @return list<string> */
-    public function runtimeDirect(): array
-    {
-        return $this->runtimeDirect;
-    }
-
-    /** @return list<string> */
-    public function devDirect(): array
-    {
-        return $this->devDirect;
-    }
+    ) {}
 
     /** @return array<string, array<string, string>> */
     public function all(): array
@@ -97,5 +84,17 @@ final readonly class DependencyGraph
         sort($dependents, SORT_STRING);
 
         return $dependents;
+    }
+
+    /** @return list<string> */
+    public function devDirect(): array
+    {
+        return $this->devDirect;
+    }
+
+    /** @return list<string> */
+    public function runtimeDirect(): array
+    {
+        return $this->runtimeDirect;
     }
 }

@@ -12,58 +12,45 @@ use Throwable;
 final class ComposerMetadataReader
 {
     private const MAX_METADATA_BYTES = 32 * 1024 * 1024;
-    private const PACKAGE_PATTERN = '~^[a-z0-9_.-]+/[a-z0-9_.-]+$~D';
 
-    /** @var array<string, mixed>|null */
-    private ?array $lock = null;
+    private const string PACKAGE_PATTERN = '~^[a-z0-9_.-]+/[a-z0-9_.-]+$~D';
 
-    private bool $lockLoaded = false;
+    /** @var list<array{code: string, package: ?string, message: string}> */
+    private array $diagnostics = [];
 
     /** @var list<array<string, mixed>>|null */
     private ?array $installed = null;
 
     private bool $installedLoaded = false;
 
-    /** @var list<array{code: string, package: ?string, message: string}> */
-    private array $diagnostics = [];
+    /** @var array<string, mixed>|null */
+    private ?array $lock = null;
+
+    private bool $lockLoaded = false;
 
     /** @var array<string, array<string, mixed>> */
     private array $packageComposer = [];
 
     public function __construct(
         private readonly Project $project,
-    ) {
+    ) {}
+
+    /** @return list<array{code: string, package: ?string, message: string}> */
+    public function diagnostics(): array
+    {
+        $this->lockedPackages();
+        $this->installedPackages();
+
+        return $this->diagnostics;
     }
 
-    /** @return array<string, array<string, mixed>> */
-    public function lockedPackages(): array
+    public function installedMetadataPresent(): bool
     {
-        $lock = $this->loadLock();
-
-        if ($lock === null) {
-            return [];
+        if (is_file($this->installedJsonPath())) {
+            return true;
         }
 
-        $packages = [];
-
-        foreach ([['packages', false], ['packages-dev', true]] as [$key, $dev]) {
-            $items = $lock[$key] ?? [];
-
-            if (!is_array($items)) {
-                continue;
-            }
-
-            foreach ($items as $item) {
-                if (!is_array($item) || !$this->isPackageName($item['name'] ?? null)) {
-                    continue;
-                }
-
-                $item['_dev'] = $dev;
-                $packages[$item['name']] = $item;
-            }
-        }
-
-        return $packages;
+        return $this->runtimeMatchesProject();
     }
 
     /** @return array<string, array<string, mixed>> */
@@ -97,7 +84,7 @@ final class ComposerMetadataReader
         if (is_string($raw) && $raw !== '') {
             $candidate = $this->absolutePath($raw)
                 ? $raw
-                : dirname($this->installedJsonPath()).DIRECTORY_SEPARATOR.$raw;
+                : dirname($this->installedJsonPath()) . DIRECTORY_SEPARATOR . $raw;
             $resolved = realpath($candidate);
 
             if ($resolved !== false && is_dir($resolved)) {
@@ -106,11 +93,47 @@ final class ComposerMetadataReader
         }
 
         $fallback = $this->project->root
-            .DIRECTORY_SEPARATOR.'vendor'
-            .DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $name);
+            . DIRECTORY_SEPARATOR . 'vendor'
+            . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $name);
         $resolved = realpath($fallback);
 
         return $resolved !== false && is_dir($resolved) ? $resolved : null;
+    }
+
+    /** @return array<string, array<string, mixed>> */
+    public function lockedPackages(): array
+    {
+        $lock = $this->loadLock();
+
+        if ($lock === null) {
+            return [];
+        }
+
+        $packages = [];
+
+        foreach ([['packages', false], ['packages-dev', true]] as [$key, $dev]) {
+            $items = $lock[$key] ?? [];
+
+            if (!is_array($items)) {
+                continue;
+            }
+
+            foreach ($items as $item) {
+                if (!is_array($item) || !$this->isPackageName($item['name'] ?? null)) {
+                    continue;
+                }
+
+                $item['_dev'] = $dev;
+                $packages[$item['name']] = $item;
+            }
+        }
+
+        return $packages;
+    }
+
+    public function lockPresent(): bool
+    {
+        return is_file($this->project->root . DIRECTORY_SEPARATOR . 'composer.lock');
     }
 
     /** @return array<string, mixed> */
@@ -124,19 +147,19 @@ final class ComposerMetadataReader
             return $this->packageComposer[$installPath];
         }
 
-        $path = $installPath.DIRECTORY_SEPARATOR.'composer.json';
+        $path = $installPath . DIRECTORY_SEPARATOR . 'composer.json';
 
         if (!is_file($path)) {
             return $this->packageComposer[$installPath] = [];
         }
 
         try {
-            $decoded = json_decode($this->readJsonSource($path, $name.'/composer.json'), true, flags: JSON_THROW_ON_ERROR);
+            $decoded = json_decode($this->readJsonSource($path, $name . '/composer.json'), true, flags: JSON_THROW_ON_ERROR);
         } catch (JsonException $exception) {
             $this->diagnostics[] = [
                 'code' => 'package_composer_invalid',
                 'package' => $name,
-                'message' => 'Installed package composer.json is invalid: '.$exception->getMessage(),
+                'message' => 'Installed package composer.json is invalid: ' . $exception->getMessage(),
             ];
 
             return $this->packageComposer[$installPath] = [];
@@ -145,72 +168,26 @@ final class ComposerMetadataReader
         return $this->packageComposer[$installPath] = is_array($decoded) ? $decoded : [];
     }
 
-    /** @return list<array{code: string, package: ?string, message: string}> */
-    public function diagnostics(): array
+    private function absolutePath(string $path): bool
     {
-        $this->lockedPackages();
-        $this->installedPackages();
+        $normalized = str_replace('\\', '/', $path);
 
-        return $this->diagnostics;
+        return str_starts_with($normalized, '/')
+            || str_starts_with($normalized, '//')
+            || preg_match('/^[A-Za-z]:\//', $normalized) === 1;
     }
 
-    public function lockPresent(): bool
+    private function installedJsonPath(): string
     {
-        return is_file($this->project->root.DIRECTORY_SEPARATOR.'composer.lock');
+        return $this->project->root
+            . DIRECTORY_SEPARATOR . 'vendor'
+            . DIRECTORY_SEPARATOR . 'composer'
+            . DIRECTORY_SEPARATOR . 'installed.json';
     }
 
-    public function installedMetadataPresent(): bool
+    private function isPackageName(mixed $name): bool
     {
-        if (is_file($this->installedJsonPath())) {
-            return true;
-        }
-
-        return $this->runtimeMatchesProject();
-    }
-
-    /** @return array<string, mixed>|null */
-    private function loadLock(): ?array
-    {
-        if ($this->lockLoaded) {
-            return $this->lock;
-        }
-
-        $this->lockLoaded = true;
-        $path = $this->project->root.DIRECTORY_SEPARATOR.'composer.lock';
-
-        if (!is_file($path)) {
-            $this->diagnostics[] = [
-                'code' => 'composer_lock_missing',
-                'package' => null,
-                'message' => 'composer.lock is missing; exact locked versions are unavailable.',
-            ];
-
-            return null;
-        }
-
-        try {
-            $lock = json_decode($this->readJsonSource($path, 'composer.lock'), true, flags: JSON_THROW_ON_ERROR);
-        } catch (JsonException $exception) {
-            $this->diagnostics[] = [
-                'code' => 'composer_lock_invalid',
-                'package' => null,
-                'message' => 'composer.lock is invalid JSON: '.$exception->getMessage(),
-            ];
-
-            return null;
-        }
-
-        if (!is_array($lock)) {
-            $this->diagnostics[] = [
-                'code' => 'composer_lock_invalid',
-                'package' => null,
-                'message' => 'composer.lock did not decode to an object.',
-            ];
-
-            return null;
-        }
-
-        return $this->lock = $lock;
+        return is_string($name) && preg_match(self::PACKAGE_PATTERN, $name) === 1;
     }
 
     /** @return list<array<string, mixed>>|null */
@@ -233,7 +210,7 @@ final class ComposerMetadataReader
             $this->diagnostics[] = [
                 'code' => 'installed_metadata_invalid',
                 'package' => null,
-                'message' => 'vendor/composer/installed.json is invalid JSON: '.$exception->getMessage(),
+                'message' => 'vendor/composer/installed.json is invalid JSON: ' . $exception->getMessage(),
             ];
 
             return null;
@@ -262,7 +239,7 @@ final class ComposerMetadataReader
         }
 
         $devNames = is_array($decoded['dev-package-names'] ?? null)
-            ? array_fill_keys(array_filter($decoded['dev-package-names'], 'is_string'), true)
+            ? array_fill_keys(array_filter($decoded['dev-package-names'], is_string(...)), true)
             : [];
         $packages = [];
 
@@ -322,6 +299,68 @@ final class ComposerMetadataReader
         }
     }
 
+    /** @return array<string, mixed>|null */
+    private function loadLock(): ?array
+    {
+        if ($this->lockLoaded) {
+            return $this->lock;
+        }
+
+        $this->lockLoaded = true;
+        $path = $this->project->root . DIRECTORY_SEPARATOR . 'composer.lock';
+
+        if (!is_file($path)) {
+            $this->diagnostics[] = [
+                'code' => 'composer_lock_missing',
+                'package' => null,
+                'message' => 'composer.lock is missing; exact locked versions are unavailable.',
+            ];
+
+            return null;
+        }
+
+        try {
+            $lock = json_decode($this->readJsonSource($path, 'composer.lock'), true, flags: JSON_THROW_ON_ERROR);
+        } catch (JsonException $exception) {
+            $this->diagnostics[] = [
+                'code' => 'composer_lock_invalid',
+                'package' => null,
+                'message' => 'composer.lock is invalid JSON: ' . $exception->getMessage(),
+            ];
+
+            return null;
+        }
+
+        if (!is_array($lock)) {
+            $this->diagnostics[] = [
+                'code' => 'composer_lock_invalid',
+                'package' => null,
+                'message' => 'composer.lock did not decode to an object.',
+            ];
+
+            return null;
+        }
+
+        return $this->lock = $lock;
+    }
+
+    private function readJsonSource(string $path, string $label): string
+    {
+        $size = filesize($path);
+
+        if ($size === false || $size > self::MAX_METADATA_BYTES) {
+            throw new JsonException($label . ' exceeds the 32 MiB metadata limit.');
+        }
+
+        $content = file_get_contents($path);
+
+        if (!is_string($content)) {
+            throw new JsonException('Unable to read ' . $label . '.');
+        }
+
+        return $content;
+    }
+
     private function runtimeMatchesProject(): bool
     {
         try {
@@ -339,44 +378,5 @@ final class ComposerMetadataReader
         } catch (Throwable) {
             return false;
         }
-    }
-
-    private function readJsonSource(string $path, string $label): string
-    {
-        $size = filesize($path);
-
-        if ($size === false || $size > self::MAX_METADATA_BYTES) {
-            throw new JsonException($label.' exceeds the 32 MiB metadata limit.');
-        }
-
-        $content = file_get_contents($path);
-
-        if (!is_string($content)) {
-            throw new JsonException('Unable to read '.$label.'.');
-        }
-
-        return $content;
-    }
-
-    private function installedJsonPath(): string
-    {
-        return $this->project->root
-            .DIRECTORY_SEPARATOR.'vendor'
-            .DIRECTORY_SEPARATOR.'composer'
-            .DIRECTORY_SEPARATOR.'installed.json';
-    }
-
-    private function absolutePath(string $path): bool
-    {
-        $normalized = str_replace('\\', '/', $path);
-
-        return str_starts_with($normalized, '/')
-            || str_starts_with($normalized, '//')
-            || preg_match('/^[A-Za-z]:\//', $normalized) === 1;
-    }
-
-    private function isPackageName(mixed $name): bool
-    {
-        return is_string($name) && preg_match(self::PACKAGE_PATTERN, $name) === 1;
     }
 }

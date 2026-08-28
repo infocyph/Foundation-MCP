@@ -28,12 +28,15 @@ use RuntimeException;
  */
 final readonly class ResourceReader
 {
-    private const int MAX_BYTES = 1_048_576;
-    private const int MAX_LINES = 400;
     private const int DEFAULT_LINES = 200;
 
-    private SecretPolicy $secrets;
+    private const int MAX_BYTES = 1_048_576;
+
+    private const int MAX_LINES = 400;
+
     private Redactor $redactor;
+
+    private SecretPolicy $secrets;
 
     public function __construct(
         private Project $project,
@@ -43,23 +46,6 @@ final readonly class ResourceReader
     ) {
         $this->secrets = $secrets ?? new SecretPolicy();
         $this->redactor = $redactor ?? new Redactor();
-    }
-
-    /** @return ResourceRead */
-    public function project(string $path, int $startLine = 1, ?int $endLine = null): array
-    {
-        $this->secrets->assertAllowed($path);
-        $paths = new PathPolicy($this->project->root);
-        $resolved = $paths->projectFile($path);
-
-        return $this->read(
-            $resolved,
-            $this->relative($resolved, $this->project->root),
-            'project',
-            null,
-            $startLine,
-            $endLine,
-        );
     }
 
     /** @return ResourceRead */
@@ -80,6 +66,23 @@ final readonly class ResourceReader
             $this->relative($resolved, $installed->installPath),
             'package',
             $package,
+            $startLine,
+            $endLine,
+        );
+    }
+
+    /** @return ResourceRead */
+    public function project(string $path, int $startLine = 1, ?int $endLine = null): array
+    {
+        $this->secrets->assertAllowed($path);
+        $paths = new PathPolicy($this->project->root);
+        $resolved = $paths->projectFile($path);
+
+        return $this->read(
+            $resolved,
+            $this->relative($resolved, $this->project->root),
+            'project',
+            null,
             $startLine,
             $endLine,
         );

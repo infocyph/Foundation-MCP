@@ -13,6 +13,6 @@ final readonly class SymbolResource
 
     public function execute(string $symbol): string
     {
-        return ResourcePayload::json((new SymbolTool($this->services))->execute(rawurldecode($symbol)));
+        return ResourcePayload::json(new SymbolTool($this->services)->execute(rawurldecode($symbol)));
     }
 }
