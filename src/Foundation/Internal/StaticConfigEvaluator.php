@@ -11,7 +11,7 @@ use PhpParser\Node\Scalar;
 
 /**
  * @phpstan-type EnvironmentRef array{name:string,helper:string,has_default:bool,default:mixed}
- * @phpstan-type EvalResult array{status:string,value:mixed,environment:list<EnvironmentRef>,classes:list<string>}
+ * @phpstan-type EvalResult array{status:'literal'|'environment'|'dynamic',value:mixed,environment:list<EnvironmentRef>,classes:list<string>}
  */
 final class StaticConfigEvaluator
 {
@@ -27,13 +27,10 @@ final class StaticConfigEvaluator
             if (!$statement instanceof Node\Stmt\Expression || !$statement->expr instanceof Expr\Assign) {
                 continue;
             }
-
             $assign = $statement->expr;
-            if (!$assign->var instanceof Expr\Variable || !is_string($assign->var->name)) {
-                continue;
+            if ($assign->var instanceof Expr\Variable && is_string($assign->var->name)) {
+                $this->variables[$assign->var->name] = $this->evaluate($assign->expr);
             }
-
-            $this->variables[$assign->var->name] = $this->evaluate($assign->expr);
         }
     }
 
@@ -41,7 +38,7 @@ final class StaticConfigEvaluator
     public function evaluate(Expr $expr): array
     {
         return match (true) {
-            $expr instanceof Scalar\String_ => $this->literal($this->boundedString($expr->value)),
+            $expr instanceof Scalar\String_ => $this->literal($this->string($expr->value)),
             $expr instanceof Scalar\Int_ => $this->literal($expr->value),
             $expr instanceof Scalar\Float_ => $this->literal($expr->value),
             $expr instanceof Expr\ConstFetch => $this->constant($expr),
@@ -54,7 +51,7 @@ final class StaticConfigEvaluator
             $expr instanceof Expr\BinaryOp\Concat => $this->concat($expr),
             $expr instanceof Expr\BinaryOp => $this->binary($expr),
             $expr instanceof Expr\Ternary => $this->ternary($expr),
-            $expr instanceof Expr\PropertyFetch => $this->propertyFetch($expr),
+            $expr instanceof Expr\PropertyFetch, $expr instanceof Expr\StaticPropertyFetch => $this->dynamicWithClasses($expr),
             default => $this->dynamic(),
         };
     }
@@ -76,7 +73,6 @@ final class StaticConfigEvaluator
         if (!$expr->class instanceof Name || !$expr->name instanceof Node\Identifier) {
             return $this->dynamic();
         }
-
         $class = $this->resolvedName($expr->class);
         if (strtolower($expr->name->toString()) === 'class') {
             return ['status' => 'literal', 'value' => $class, 'environment' => [], 'classes' => [$class]];
@@ -88,20 +84,15 @@ final class StaticConfigEvaluator
     /** @return EvalResult */
     private function variable(Expr\Variable $expr): array
     {
-        if (!is_string($expr->name)) {
-            return $this->dynamic();
-        }
-
-        return $this->variables[$expr->name] ?? $this->dynamic();
+        return is_string($expr->name) ? ($this->variables[$expr->name] ?? $this->dynamic()) : $this->dynamic();
     }
 
     /** @return EvalResult */
     private function functionCall(Expr\FuncCall $expr): array
     {
         if (!$expr->name instanceof Name) {
-            return $this->dynamic();
+            return $this->dynamicFromArgs($expr->args);
         }
-
         $helper = strtolower($expr->name->toString());
         if (!in_array($helper, ['env', 'env_string', 'env_bool', 'env_int', 'env_float', 'env_array'], true)) {
             return $this->dynamicFromArgs($expr->args);
@@ -109,13 +100,11 @@ final class StaticConfigEvaluator
 
         $name = isset($expr->args[0]) ? $this->evaluate($expr->args[0]->value) : $this->dynamic();
         $default = isset($expr->args[1]) ? $this->evaluate($expr->args[1]->value) : $this->literal(null);
-        $environment = $default['environment'];
-        $classes = $default['classes'];
-
         if ($name['status'] !== 'literal' || !is_string($name['value']) || $name['value'] === '') {
-            return $this->merge('dynamic', null, $environment, $classes);
+            return $this->merge('dynamic', null, $default['environment'], $default['classes']);
         }
 
+        $environment = $default['environment'];
         $environment[] = [
             'name' => $name['value'],
             'helper' => $helper,
@@ -123,7 +112,7 @@ final class StaticConfigEvaluator
             'default' => $default['status'] === 'literal' ? $default['value'] : null,
         ];
 
-        return $this->merge('environment', null, $environment, $classes);
+        return $this->merge('environment', null, $environment, $default['classes']);
     }
 
     /** @param list<Node\Arg> $args @return EvalResult */
@@ -132,9 +121,9 @@ final class StaticConfigEvaluator
         $environment = [];
         $classes = [];
         foreach ($args as $arg) {
-            $result = $this->evaluate($arg->value);
-            array_push($environment, ...$result['environment']);
-            array_push($classes, ...$result['classes']);
+            $value = $this->evaluate($arg->value);
+            array_push($environment, ...$value['environment']);
+            array_push($classes, ...$value['classes']);
         }
 
         return $this->merge('dynamic', null, $environment, $classes);
@@ -169,7 +158,7 @@ final class StaticConfigEvaluator
         $right = $this->evaluate($expr->right);
         if ($left['status'] === 'literal' && $right['status'] === 'literal'
             && is_string($left['value']) && is_string($right['value'])) {
-            return $this->literal($this->boundedString($left['value'].$right['value']));
+            return $this->literal($this->string($left['value'].$right['value']));
         }
 
         return $this->combineDynamic($left, $right);
@@ -179,7 +168,7 @@ final class StaticConfigEvaluator
     private function binary(Expr\BinaryOp $expr): array
     {
         $left = $this->evaluate($expr->left);
-        $right = $this->evaluaue($expr->right);
+        $right = $this->evaluate($expr->right);
         if ($left['status'] !== 'literal' || $right['status'] !== 'literal') {
             return $this->combineDynamic($left, $right);
         }
@@ -202,12 +191,11 @@ final class StaticConfigEvaluator
     {
         $condition = $this->evaluate($expr->cond);
         if ($condition['status'] === 'literal') {
-            $branch = (bool) $condition['value'] ? ($expr->if ?? $expr->cond) : $expr->else;
-            return $this->evaluate($branch);
+            return $this->evaluate((bool) $condition['value'] ? ($expr->if ?? $expr->cond) : $expr->else);
         }
+        $left = $this->evaluate($expr->if ?? $expr->cond);
+        $right = $this->evaluate($expr->else);
 
-        $left = $this->evaluaue($expr->if ?? $expr->cond);
-        $right = $this->evaluaue($expr->else);
         return $this->merge(
             'dynamic',
             null,
@@ -217,16 +205,22 @@ final class StaticConfigEvaluator
     }
 
     /** @return EvalResult */
-    private function propertyFetch(Expr\PropertyFetch $expr): array
+    private function dynamicWithClasses(Expr $expr): array
     {
-        if ($expr->var instanceof Expr\ClassConstFetch && $expr->var->class instanceof Name) {
-            return $this->merge('dynamic', null, [], [$this->resolvedName($expr->var->class)]);
+        $classes = [];
+        foreach ($expr->getSubNodeNames() as $name) {
+            $value = $expr->{$name};
+            if ($value instanceof Name) {
+                $classes[] = $this->resolvedName($value);
+            } elseif ($value instanceof Expr\ClassConstFetch && $value->class instanceof Name) {
+                $classes[] = $this->resolvedName($value->class);
+            }
         }
 
-        return $this->dynamic();
+        return $this->merge('dynamic', null, [], $classes);
     }
 
-    /** @return EvalResult */
+    /** @param EvalResult $left @param EvalResult $right @return EvalResult */
     private function combineDynamic(array $left, array $right): array
     {
         return $this->merge(
@@ -254,8 +248,7 @@ final class StaticConfigEvaluator
     {
         $env = [];
         foreach ($environment as $item) {
-            $key = strtolower($item['name']).'|'.$item['helper'];
-            $env[$key] = $item;
+            $env[strtolower($item['name']).'|'.$item['helper']] = $item;
         }
         $classMap = [];
         foreach ($classes as $class) {
@@ -264,12 +257,7 @@ final class StaticConfigEvaluator
             }
         }
 
-        return [
-            'status' => $status,
-            'value' => $value,
-            'environment' => array_values($env),
-            'classes' => array_keys($classMap),
-        ];
+        return ['status' => $status, 'value' => $value, 'environment' => array_values($env), 'classes' => array_keys($classMap)];
     }
 
     private function resolvedName(Name $name): string
@@ -278,7 +266,7 @@ final class StaticConfigEvaluator
         return ltrim(($resolved instanceof Name ? $resolved : $name)->toString(), '\\');
     }
 
-    private function boundedString(string $value): string
+    private function string(string $value): string
     {
         return strlen($value) <= self::MAX_STRING_BYTES ? $value : substr($value, 0, self::MAX_STRING_BYTES);
     }
