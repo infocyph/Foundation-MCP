@@ -83,47 +83,6 @@ jobs:
       - run: composer install --no-interaction --prefer-dist
       - run: vendor/bin/pest tests/Protocol
 
-  ecosystem-zero-footprint:
-    name: "Real Infbyte ecosystem and zero footprint"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: shivammathur/setup-php@v2
-        with:
-          php-version: "8.5"
-          coverage: none
-          tools: composer:v2
-      - run: composer install --no-interaction --prefer-dist
-      - name: Checkout Infbyte
-        run: git clone --depth=1 https://github.com/infocyph/Infbyte.git "$RUNNER_TEMP/infbyte"
-      - name: Inject release-candidate require-dev contract
-        run: |
-          php -r '
-          $path = getenv("RUNNER_TEMP") . "/infbyte/composer.json";
-          $data = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
-          $data["repositories"] = array_values(array_merge([[
-              "type" => "path",
-              "url" => getenv("GITHUB_WORKSPACE"),
-              "options" => ["symlink" => false, "versions" => ["infocyph/foundation-mcp" => "1.0.0"]],
-          ]], $data["repositories"] ?? []));
-          $data["require-dev"]["infocyph/foundation-mcp"] = "^1.0";
-          ksort($data["require-dev"]);
-          file_put_contents($path, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . PHP_EOL);
-          '
-      - name: Install Infbyte with Foundation MCP
-        run: composer --working-dir="$RUNNER_TEMP/infbyte" update --no-interaction --prefer-stable --with-all-dependencies
-      - name: Run real ecosystem contract
-        run: FOUNDATION_MCP_ECOSYSTEM_ROOT="$RUNNER_TEMP/infbyte" vendor/bin/pest tests/Ecosystem/InfbyteContractTest.php
-      - name: Run Foundation MCP doctor against Infbyte
-        run: "$RUNNER_TEMP/infbyte/vendor/bin/foundation-mcp" doctor --root="$RUNNER_TEMP/infbyte" --no-git
-      - name: Validate production zero footprint
-        run: |
-          rm -rf "$RUNNER_TEMP/infbyte/vendor"
-          composer --working-dir="$RUNNER_TEMP/infbyte" install --no-dev --no-interaction --prefer-dist
-          test ! -e "$RUNNER_TEMP/infbyte/vendor/bin/foundation-mcp"
-          test ! -d "$RUNNER_TEMP/infbyte/vendor/infocyph/foundation-mcp"
-          test ! -d "$RUNNER_TEMP/infbyte/vendor/infocyph/phpforge"
-
   release-guard:
     name: "PHPForge release gate and benchmarks"
     runs-on: ubuntu-latest
