@@ -24,6 +24,12 @@ final readonly class SourceFileFinder
         'tmp',
     ];
 
+    private const int MAX_DIRECTORIES = 10_000;
+
+    private const int MAX_ENTRIES = 100_000;
+
+    private const int MAX_FILES = 20_000;
+
     public function __construct(
         private Project $project,
         private ComposerInspector $composer,
@@ -74,6 +80,10 @@ final readonly class SourceFileFinder
             $mtime === false ? -1 : $mtime,
             $ctime === false ? -1 : $ctime,
         );
+
+        if (count($files) > self::MAX_FILES) {
+            throw new RuntimeException('Source discovery exceeds the 20,000 PHP file limit. Narrow the analyzed source roots.');
+        }
     }
 
     /**
@@ -84,6 +94,8 @@ final readonly class SourceFileFinder
     {
         $files = [];
         $secrets = new SecretPolicy();
+        $visitedDirectories = 0;
+        $visitedEntries = 0;
 
         foreach ($roots as $root) {
             if (is_file($root)) {
@@ -99,38 +111,50 @@ final readonly class SourceFileFinder
             $stack = [$root];
 
             while (($directory = array_pop($stack)) !== null) {
-                $entries = scandir($directory);
+                if (++$visitedDirectories > self::MAX_DIRECTORIES) {
+                    throw new RuntimeException('Source discovery exceeds the 10,000 directory limit. Narrow the analyzed source roots.');
+                }
 
-                if ($entries === false) {
+                $handle = $this->openDirectory($directory);
+
+                if ($handle === false) {
                     continue;
                 }
 
-                foreach ($entries as $entry) {
-                    if ($entry === '.' || $entry === '..') {
-                        continue;
+                try {
+                    while (($entry = readdir($handle)) !== false) {
+                        if ($entry === '.' || $entry === '..') {
+                            continue;
+                        }
+
+                        if (++$visitedEntries > self::MAX_ENTRIES) {
+                            throw new RuntimeException('Source discovery exceeds the 100,000 filesystem entry limit. Narrow the analyzed source roots.');
+                        }
+
+                        $path = $directory . DIRECTORY_SEPARATOR . $entry;
+
+                        if (is_link($path)) {
+                            continue;
+                        }
+
+                        $relative = $this->relative($path, $base);
+
+                        if ($relative === null || $this->excluded($relative)) {
+                            continue;
+                        }
+
+                        if (is_dir($path)) {
+                            $stack[] = $path;
+
+                            continue;
+                        }
+
+                        if (is_file($path)) {
+                            $this->addFile($files, $path, $base, $secrets);
+                        }
                     }
-
-                    $path = $directory . DIRECTORY_SEPARATOR . $entry;
-
-                    if (is_link($path)) {
-                        continue;
-                    }
-
-                    $relative = $this->relative($path, $base);
-
-                    if ($relative === null || $this->excluded($relative)) {
-                        continue;
-                    }
-
-                    if (is_dir($path)) {
-                        $stack[] = $path;
-
-                        continue;
-                    }
-
-                    if (is_file($path)) {
-                        $this->addFile($files, $path, $base, $secrets);
-                    }
+                } finally {
+                    closedir($handle);
                 }
             }
         }
@@ -155,6 +179,19 @@ final readonly class SourceFileFinder
             || str_starts_with($normalized, 'bootstrap/cache/')
             || $normalized === 'public/build'
             || str_starts_with($normalized, 'public/build/');
+    }
+
+    /** @return resource|false */
+    private function openDirectory(string $directory)
+    {
+        // Optional/unreadable roots degrade to absence; warnings must not leak into the long-lived MCP protocol process.
+        set_error_handler(static fn(int $severity): bool => $severity === E_WARNING, E_WARNING);
+
+        try {
+            return opendir($directory);
+        } finally {
+            restore_error_handler();
+        }
     }
 
     /** @return list<string> */
@@ -198,6 +235,7 @@ final readonly class SourceFileFinder
             try {
                 $roots[] = $paths->packagePath($package->name, $candidate);
             } catch (RuntimeException) {
+                // Composer autoload entries may be optional or absent in a distribution; only existing approved roots are indexed.
             }
         }
 
