@@ -111,23 +111,25 @@ final readonly class ResourceReader
             throw new InvalidArgumentException('A resource read may contain at most 400 lines.');
         }
 
-        $size = filesize($resolved);
+        $handle = fopen($resolved, 'rb');
 
-        if ($size === false) {
-            throw new RuntimeException('Unable to determine resource size.');
-        }
-
-        if ($size > self::MAX_BYTES) {
-            throw new RuntimeException('Resource exceeds the 1 MiB read limit.');
-        }
-
-        $content = file_get_contents($resolved);
-
-        if ($content === false) {
+        if ($handle === false) {
             throw new RuntimeException('Unable to read resource.');
         }
 
-        if (strlen($content) > self::MAX_BYTES) {
+        try {
+            $content = stream_get_contents($handle, self::MAX_BYTES + 1);
+        } finally {
+            fclose($handle);
+        }
+
+        if (!is_string($content)) {
+            throw new RuntimeException('Unable to read resource.');
+        }
+
+        $bytes = strlen($content);
+
+        if ($bytes > self::MAX_BYTES) {
             throw new RuntimeException('Resource exceeds the 1 MiB read limit.');
         }
 
@@ -154,7 +156,7 @@ final readonly class ResourceReader
             'start_line' => $startLine,
             'end_line' => $actualEnd,
             'total_lines' => $total,
-            'bytes' => $size,
+            'bytes' => $bytes,
             'fingerprint' => hash('sha256', $content),
             'truncated' => $startLine > 1 || $actualEnd < $total,
             'content' => $excerpt,

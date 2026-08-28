@@ -10,6 +10,8 @@ final class ProjectDetector
 {
     private const array CANONICAL_DIRECTORIES = ['app', 'bootstrap', 'config', 'routes'];
 
+    private const int MAX_COMPOSER_BYTES = 1_048_576;
+
     public function detect(string $root): Project
     {
         $composerPath = $root . DIRECTORY_SEPARATOR . 'composer.json';
@@ -29,11 +31,7 @@ final class ProjectDetector
         }
 
         try {
-            $composer = json_decode(
-                file_get_contents($composerPath) ?: '',
-                true,
-                flags: JSON_THROW_ON_ERROR,
-            );
+            $composer = json_decode($this->readComposer($composerPath), true, flags: JSON_THROW_ON_ERROR);
         } catch (JsonException) {
             $evidence['composer_json_valid'] = false;
 
@@ -79,7 +77,7 @@ final class ProjectDetector
         }
 
         try {
-            $content = fread($handle, 65536);
+            $content = fread($handle, 65_536);
         } finally {
             fclose($handle);
         }
@@ -106,5 +104,30 @@ final class ProjectDetector
         }
 
         return $directories;
+    }
+
+    private function readComposer(string $path): string
+    {
+        $handle = fopen($path, 'rb');
+
+        if ($handle === false) {
+            throw new JsonException('Unable to read composer.json.');
+        }
+
+        try {
+            $content = stream_get_contents($handle, self::MAX_COMPOSER_BYTES + 1);
+        } finally {
+            fclose($handle);
+        }
+
+        if (!is_string($content)) {
+            throw new JsonException('Unable to read composer.json.');
+        }
+
+        if (strlen($content) > self::MAX_COMPOSER_BYTES) {
+            throw new JsonException('composer.json exceeds the 1 MiB metadata limit.');
+        }
+
+        return $content;
     }
 }

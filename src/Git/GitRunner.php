@@ -16,6 +16,10 @@ final readonly class GitRunner
 {
     private const int MAX_OUTPUT_BYTES = 4_194_304;
 
+    private const int MAX_STDERR_BYTES = 65_536;
+
+    private const int TIMEOUT_NANOSECONDS = 5_000_000_000;
+
     private SecretPolicy $secrets;
 
     public function __construct(
@@ -60,10 +64,21 @@ final readonly class GitRunner
     /** @return array{exit:int,stdout:string,stderr:string} */
     public function status(): array
     {
-        return $this->run(['-c', 'core.quotepath=false', 'status', '--porcelain=v1', '-z', '--untracked-files=all']);
+        return $this->run([
+            '-c',
+            'core.quotepath=false',
+            'status',
+            '--porcelain=v1',
+            '-z',
+            '--untracked-files=all',
+            '--ignore-submodules=all',
+        ]);
     }
 
-    /** @return array{exit:int,stdout:string,stderr:string} */
+    /**
+     * @param list<string> $arguments
+     * @return array{exit:int,stdout:string,stderr:string}
+     */
     private function run(array $arguments, bool $allowFailure = false): array
     {
         if (!$this->enabled) {
@@ -74,17 +89,32 @@ final readonly class GitRunner
             throw new RuntimeException('Git inspection is disabled.');
         }
 
-        $command = [$this->executable, '--no-optional-locks', '--no-pager', ...$arguments];
+        $command = [
+            $this->executable,
+            '--no-optional-locks',
+            '--no-pager',
+            '-c',
+            'core.fsmonitor=false',
+            ...$arguments,
+        ];
         $descriptors = [
             0 => ['pipe', 'r'],
             1 => ['pipe', 'w'],
             2 => ['pipe', 'w'],
         ];
 
-        set_error_handler(static fn(int $severity): bool => $severity === E_WARNING);
+        // proc_open warns when Git is unavailable; normalize that boundary failure without leaking a warning into the MCP host.
+        set_error_handler(static fn(int $severity): bool => $severity === E_WARNING, E_WARNING);
 
         try {
-            $process = proc_open($command, $descriptors, $pipes, $this->project->root, null, ['bypass_shell' => true]);
+            $process = proc_open(
+                $command,
+                $descriptors,
+                $pipes,
+                $this->project->root,
+                $this->environment(),
+                ['bypass_shell' => true],
+            );
         } finally {
             restore_error_handler();
         }
@@ -96,18 +126,67 @@ final readonly class GitRunner
 
             throw new RuntimeException('Git is unavailable.');
         }
-        fclose($pipes[0]);
-        $stdout = stream_get_contents($pipes[1], self::MAX_OUTPUT_BYTES + 1);
-        fclose($pipes[1]);
-        $stderr = stream_get_contents($pipes[2], 65_537);
-        fclose($pipes[2]);
-        $exit = proc_close($process);
 
-        $stdout = is_string($stdout) ? $stdout : '';
-        $stderr = is_string($stderr) ? $stderr : '';
-        if (strlen($stdout) > self::MAX_OUTPUT_BYTES || strlen($stderr) > 65_536) {
-            throw new RuntimeException('Git output exceeds the inspection limit.');
+        fclose($pipes[0]);
+        stream_set_blocking($pipes[1], false);
+        stream_set_blocking($pipes[2], false);
+
+        $stdout = '';
+        $stderr = '';
+        $exit = null;
+        $deadline = hrtime(true) + self::TIMEOUT_NANOSECONDS;
+
+        try {
+            while (true) {
+                $stdout .= $this->readPipe($pipes[1], self::MAX_OUTPUT_BYTES - strlen($stdout));
+                $stderr .= $this->readPipe($pipes[2], self::MAX_STDERR_BYTES - strlen($stderr));
+
+                if (strlen($stdout) > self::MAX_OUTPUT_BYTES || strlen($stderr) > self::MAX_STDERR_BYTES) {
+                    throw new RuntimeException('Git output exceeds the inspection limit.');
+                }
+
+                $status = proc_get_status($process);
+
+                if (!$status['running']) {
+                    $exit = is_int($status['exitcode']) ? $status['exitcode'] : -1;
+                    $stdout .= $this->readPipe($pipes[1], self::MAX_OUTPUT_BYTES - strlen($stdout));
+                    $stderr .= $this->readPipe($pipes[2], self::MAX_STDERR_BYTES - strlen($stderr));
+
+                    if (strlen($stdout) > self::MAX_OUTPUT_BYTES || strlen($stderr) > self::MAX_STDERR_BYTES) {
+                        throw new RuntimeException('Git output exceeds the inspection limit.');
+                    }
+
+                    break;
+                }
+
+                if (hrtime(true) >= $deadline) {
+                    throw new RuntimeException('Git inspection exceeded the 5 second execution limit.');
+                }
+
+                usleep(1_000);
+            }
+        } finally {
+            $status = proc_get_status($process);
+
+            if ($status['running']) {
+                proc_terminate($process);
+                usleep(10_000);
+                $status = proc_get_status($process);
+
+                if ($status['running']) {
+                    proc_terminate($process, 9);
+                }
+            }
+
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $closedExit = proc_close($process);
+
+            if ($exit === null || $exit < 0) {
+                $exit = $closedExit;
+            }
         }
+
         if (!$allowFailure && $exit !== 0) {
             throw new RuntimeException('Read-only Git inspection failed: ' . trim($stderr));
         }
@@ -115,28 +194,67 @@ final readonly class GitRunner
         return ['exit' => $exit, 'stdout' => $stdout, 'stderr' => $stderr];
     }
 
+    /**
+     * @return array<string, string>
+     */
+    private function environment(): array
+    {
+        $environment = getenv();
+        $environment = is_array($environment) ? $environment : [];
+
+        foreach (array_keys($environment) as $name) {
+            if (str_starts_with(strtoupper($name), 'GIT_')) {
+                unset($environment[$name]);
+            }
+        }
+
+        // Ignore caller/global Git redirection and interactive helpers; only the resolved project repository should influence inspection.
+        $environment['GIT_CONFIG_NOSYSTEM'] = '1';
+        $environment['GIT_CONFIG_GLOBAL'] = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
+        $environment['GIT_OPTIONAL_LOCKS'] = '0';
+        $environment['GIT_TERMINAL_PROMPT'] = '0';
+
+        return $environment;
+    }
+
+    /** @param resource $pipe */
+    private function readPipe($pipe, int $remaining): string
+    {
+        $chunk = stream_get_contents($pipe, max(0, $remaining) + 1);
+
+        return is_string($chunk) ? $chunk : '';
+    }
+
     private function safeRelativePath(string $path): string
     {
         if ($path === '' || str_contains($path, "\0")) {
             throw new RuntimeException('Invalid Git path.');
         }
+
         $path = str_replace('\\', '/', $path);
+
         if (str_starts_with($path, '/') || str_starts_with($path, '//') || preg_match('/^[A-Za-z]:\//', $path) === 1) {
             throw new RuntimeException('Git paths must be project-relative.');
         }
+
         $parts = [];
+
         foreach (explode('/', $path) as $part) {
             if ($part === '' || $part === '.') {
                 continue;
             }
+
             if ($part === '..' || strtolower($part) === '.git') {
                 throw new RuntimeException('Git path traversal or metadata access is denied.');
             }
+
             $parts[] = $part;
         }
+
         if ($parts === []) {
             throw new RuntimeException('Invalid Git path.');
         }
+
         $normalized = implode('/', $parts);
         $this->secrets->assertAllowed($normalized);
 

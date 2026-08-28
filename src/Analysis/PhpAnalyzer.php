@@ -20,6 +20,8 @@ use RuntimeException;
 
 final class PhpAnalyzer
 {
+    private const int MAX_CACHE_ENTRIES = 256;
+
     private const int MAX_SOURCE_BYTES = 2_097_152;
 
     private readonly Parser $parser;
@@ -30,6 +32,9 @@ final class PhpAnalyzer
 
     /** @var array<string, AnalyzedFile> */
     private array $cache = [];
+
+    /** @var list<string> */
+    private array $cacheOrder = [];
 
     public function __construct(
         private readonly Project $project,
@@ -45,19 +50,33 @@ final class PhpAnalyzer
     {
         $path = $this->allowedPath($path);
         $roots = $this->composer->packageRoots([$package]);
+
         if (!isset($roots[$package])) {
             throw new RuntimeException('Package is not installed with an approved source root.');
         }
+
         $paths = new PathPolicy($this->project->root, $roots);
 
-        return $this->analyze($this->read($paths->packageFile($package, $path)), 'package', $package, $path, 'package-file:' . $package . ':' . $path);
+        return $this->analyze(
+            $this->read($paths->packageFile($package, $path)),
+            'package',
+            $package,
+            $path,
+            'package-file:' . $package . ':' . $path,
+        );
     }
 
     public function project(string $path): AnalyzedFile
     {
         $path = $this->allowedPath($path);
 
-        return $this->analyze($this->read($this->projectPaths->projectFile($path)), 'project', null, $path, 'project-file:' . $path);
+        return $this->analyze(
+            $this->read($this->projectPaths->projectFile($path)),
+            'project',
+            null,
+            $path,
+            'project-file:' . $path,
+        );
     }
 
     /**
@@ -75,6 +94,7 @@ final class PhpAnalyzer
     private function allowedPath(string $path): string
     {
         $this->secrets->assertAllowed($path);
+
         if (strtolower(pathinfo(str_replace('\\', '/', $path), PATHINFO_EXTENSION)) !== 'php') {
             throw new RuntimeException('PHP analysis accepts only .php source files.');
         }
@@ -85,8 +105,8 @@ final class PhpAnalyzer
     private function analyze(string $source, string $scope, ?string $package, string $path, string $cacheIdentity): AnalyzedFile
     {
         $fingerprint = hash('sha256', $source);
-        $cacheKey = $cacheIdentity;
-        $cached = $this->cache[$cacheKey] ?? null;
+        $cached = $this->cache[$cacheIdentity] ?? null;
+
         if ($cached !== null && hash_equals($cached->fingerprint, $fingerprint)) {
             return $cached;
         }
@@ -94,8 +114,12 @@ final class PhpAnalyzer
         try {
             $nodes = $this->parser->parse($source);
         } catch (Error $error) {
-            return $this->cache[$cacheKey] = $this->parseFailure($scope, $package, $path, $fingerprint, $source, $error);
+            return $this->remember(
+                $cacheIdentity,
+                $this->parseFailure($scope, $package, $path, $fingerprint, $source, $error),
+            );
         }
+
         if (!is_array($nodes)) {
             throw new RuntimeException('PHP parser returned no syntax tree.');
         }
@@ -115,13 +139,16 @@ final class PhpAnalyzer
         try {
             $traverser->traverse($nodes);
         } catch (Error $error) {
-            return $this->cache[$cacheKey] = $this->parseFailure($scope, $package, $path, $fingerprint, $source, $error);
+            return $this->remember(
+                $cacheIdentity,
+                $this->parseFailure($scope, $package, $path, $fingerprint, $source, $error),
+            );
         }
 
-        return $this->cache[$cacheKey] = new AnalyzedFile(
+        return $this->remember($cacheIdentity, new AnalyzedFile(
             scope: $scope,
             package: $package,
-            path: $this->relative($path),
+            path: $this->normalizeRelativePath($path),
             fingerprint: $fingerprint,
             bytes: strlen($source),
             namespaces: $declarations->namespaces(),
@@ -130,7 +157,7 @@ final class PhpAnalyzer
             references: $references->references(),
             literalArrays: $literals->arrays(),
             errors: [],
-        );
+        ));
     }
 
     private function assertSource(string $source): void
@@ -138,9 +165,26 @@ final class PhpAnalyzer
         if (strlen($source) > self::MAX_SOURCE_BYTES) {
             throw new RuntimeException('PHP source exceeds the 2 MiB analysis limit.');
         }
+
         if (str_contains($source, "\0")) {
             throw new RuntimeException('Binary PHP source is not supported.');
         }
+    }
+
+    private function normalizeRelativePath(string $path): string
+    {
+        $path = str_replace('\\', '/', $path);
+        $parts = [];
+
+        foreach (explode('/', $path) as $part) {
+            if ($part === '' || $part === '.') {
+                continue;
+            }
+
+            $parts[] = $part;
+        }
+
+        return implode('/', $parts);
     }
 
     private function parseFailure(
@@ -154,7 +198,7 @@ final class PhpAnalyzer
         return new AnalyzedFile(
             scope: $scope,
             package: $package,
-            path: $this->relative($path),
+            path: $this->normalizeRelativePath($path),
             fingerprint: $fingerprint,
             bytes: strlen($source),
             namespaces: [],
@@ -172,30 +216,43 @@ final class PhpAnalyzer
 
     private function read(string $path): string
     {
-        $size = filesize($path);
-        if ($size !== false && $size > self::MAX_SOURCE_BYTES) {
-            throw new RuntimeException('PHP source exceeds the 2 MiB analysis limit.');
-        }
-        $source = file_get_contents($path);
-        if ($source === false) {
+        $handle = fopen($path, 'rb');
+
+        if ($handle === false) {
             throw new RuntimeException('Unable to read PHP source.');
         }
+
+        try {
+            $source = stream_get_contents($handle, self::MAX_SOURCE_BYTES + 1);
+        } finally {
+            fclose($handle);
+        }
+
+        if (!is_string($source)) {
+            throw new RuntimeException('Unable to read PHP source.');
+        }
+
         $this->assertSource($source);
 
         return $source;
     }
 
-    private function relative(string $path): string
+    private function remember(string $key, AnalyzedFile $file): AnalyzedFile
     {
-        $path = str_replace('\\', '/', $path);
-        $parts = [];
-        foreach (explode('/', $path) as $part) {
-            if ($part === '' || $part === '.') {
-                continue;
+        if (!isset($this->cache[$key])) {
+            if (count($this->cacheOrder) >= self::MAX_CACHE_ENTRIES) {
+                $oldest = array_shift($this->cacheOrder);
+
+                if (is_string($oldest)) {
+                    unset($this->cache[$oldest]);
+                }
             }
-            $parts[] = $part;
+
+            $this->cacheOrder[] = $key;
         }
 
-        return implode('/', $parts);
+        $this->cache[$key] = $file;
+
+        return $file;
     }
 }
