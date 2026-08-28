@@ -1330,7 +1330,7 @@ The first release includes the entire intended scope; no desired capability is i
 [x] related-test discovery
 [x] route inspector
 [x] command inspector
-[ ] provider inspector
+[x] provider inspector
 [ ] config inspector
 [ ] schedule inspector
 [ ] Foundation maintenance-worker inspector
@@ -1389,7 +1389,8 @@ Update this checklist after each meaningful implementation chunk. Do not mark an
 - `62e51109` — deterministic ranked symbol/path/text search across project/test/route/config/bootstrap/docs/Foundation/explicit-package/all scopes; pure path/text searches remain parser-free; explicit package targeting prevents broad vendor scans; secret/symlink/exclusion filtering; 2,500-file, 512 KiB/file, 16 MiB/target, 100-result and 240-byte-excerpt search bounds; canonical project/package line-range reads with 1 MiB/400-line limits, binary/secret denial, redaction, fingerprint/truncation metadata; focused tests for parser-free filesystem search, scope/package ranking, secret omission, bounded reads, redaction and traversal denial. Local PHP 8.4 syntax validation passed for the new search/read classes and focused tests; dependency-complete Pest/PHPForge execution remains for CI/integration validation.
 - `feat: add related-test discovery` — symbol/file related-test ranking over the existing lazy symbol/reference indexes; Composer `autoload-dev` plus conventional test-root discovery; exact-reference/direct-call/direct-construction/path/filename/lexical evidence bands; explicit ambiguity handling; canonical file targets; 100-result bound and 256 KiB/file / 8 MiB lexical fallback limits; focused coverage for exact class/method references, structural fallback, custom `spec/` roots, lexical-only files and input bounds. Local PHP 8.4 syntax validation passed for `TestLocator` and its focused test; dependency-complete Pest/PHPForge execution remains for CI/integration validation.
 - `e983e38e` — static Foundation/Webrick route inspection across authoritative project route files, Foundation OAuth candidates and Webrick route attributes; installed route-file/verb/resource contracts are derived from installed package source rather than copied registries; nested groups/preset groups/resource expansion/handlers/middleware/options/conditional and dynamic state are represented without application bootstrap or package execution; output/source limits and file-local parse diagnostics are enforced.
-- `955ab2d4` — static `routes/console.php` command registration inspection plus non-executing `CommandDefinition::define()` metadata extraction for command names, aliases, descriptions, groups, runtime, capabilities, visibility, arguments/options and dynamic/conditional definitions.
+- `d91db26c` — static `routes/console.php` command registration inspection plus non-executing `CommandDefinition::define()` metadata extraction for command names, aliases, descriptions, groups, runtime, capabilities, visibility, arguments/options and dynamic/conditional definitions; command inspector files are attached at their canonical paths.
+- `59dae9cf` — static `bootstrap/providers.php` inspection with provider groups derived from the installed Foundation contract, common/runtime effective provider graphs, declaration deduplication, project symbol/Composer ownership metadata, dynamic-state preservation and no provider instantiation.
 
 The overall `mcp/sdk STDIO integration`, `explicit MCP registration`, `doctor command`, `bounded output`, `lazy in-memory cache/invalidation` and broad test-suite checklist entries remain intentionally open until their complete production contracts are exercised across the relevant service/index/protocol/integration layers.
 
