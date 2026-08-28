@@ -14,3 +14,5 @@ All notable changes to Foundation MCP will be documented in this file.
 - Project/package path containment, secret-file denial and output redaction primitives.
 - Exact Composer lock/installed package inspection, dependency graph, install-root ownership and Foundation package diagnostics.
 - Explicit `composer-runtime-api ^2.1` contract for `Composer\InstalledVersions` install-path fallback.
+- Static installed-Foundation `ModuleCatalog` parsing with purpose-first package/config correlation and runtime-activation-safe module intelligence.
+- `doctor` validation for installed Foundation `ModuleCatalog` readability.

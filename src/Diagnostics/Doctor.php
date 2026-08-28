@@ -6,6 +6,7 @@ namespace Infocyph\FoundationMcp\Diagnostics;
 
 use Composer\InstalledVersions;
 use Infocyph\FoundationMcp\Composer\ComposerInspector;
+use Infocyph\FoundationMcp\Foundation\ModuleCatalogReader;
 use Infocyph\FoundationMcp\Project\Project;
 use Infocyph\FoundationMcp\Project\ProjectDetector;
 use Infocyph\FoundationMcp\Project\ProjectLocator;
@@ -44,6 +45,7 @@ final readonly class Doctor
                 $composer = new ComposerInspector($project);
                 $checks[] = $this->composerCheck($composer);
                 $checks[] = $this->foundationCheck($composer);
+                $checks[] = $this->moduleCatalogCheck($project, $composer);
                 $checks[] = $this->sourceRootsCheck($project);
                 $checks[] = $this->securityCheck($project, $composer);
             }
@@ -197,6 +199,27 @@ final readonly class Doctor
             'name' => 'Foundation package',
             'ok' => $ok,
             'detail' => $detail,
+        ];
+    }
+
+    /** @return array{name: string, ok: bool, detail: string} */
+    private function moduleCatalogCheck(Project $project, ComposerInspector $composer): array
+    {
+        try {
+            $reader = new ModuleCatalogReader($project, $composer);
+            $modules = $reader->definitions();
+        } catch (Throwable $exception) {
+            return [
+                'name' => 'Foundation ModuleCatalog',
+                'ok' => false,
+                'detail' => $exception->getMessage(),
+            ];
+        }
+
+        return [
+            'name' => 'Foundation ModuleCatalog',
+            'ok' => $modules !== [],
+            'detail' => count($modules).' purpose-first modules parsed statically',
         ];
     }
 
