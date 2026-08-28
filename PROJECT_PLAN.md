@@ -430,20 +430,27 @@ Do not add `composer/semver` unless the implementation proves a necessary operat
 
 The production analysis path is the parser/analysis environment supplied by required PHPForge.
 
-Foundation MCP must support static extraction of:
+Foundation MCP statically extracts:
 
 - namespace/imports/aliases;
 - class/interface/trait/enum/function declarations;
-- methods/properties/constants/enum cases;
+- methods/properties/promoted properties/constants/enum cases;
 - parameters/types/return types;
 - inheritance/implements/trait relationships;
 - attributes;
-- PHPDoc summaries;
+- bounded PHPDoc summaries;
 - constructor/static/function calls;
-- resolvable method calls;
+- resolvable and lexical method/property calls;
 - type references;
-- literal arrays used by Foundation/module/config registration;
-- file/line locations.
+- bounded literal arrays used by Foundation/module/config registration;
+- file/line locations;
+- per-reference confidence (`resolved`, `lexical`, `dynamic` at analyzer level; `exact` is added by later indexes where declaration identity is proven).
+
+The analyzer works in-process through the PHP parser supplied by the mandatory PHPForge dependency graph. It does not add a second direct parser dependency, does not shell out to PHPForge per file, does not retain full ASTs after compact extraction and does not execute host source.
+
+Project source is constrained to approved project paths; package source is authorized only for the package explicitly requested using Composer-resolved install roots. Reads are limited to `.php` regular files, protected by the secret policy and bounded to 2 MiB per source file. Literal extraction is independently bounded by array count, item count, depth and string size.
+
+Parse errors are file-local structured results. One malformed PHP file must not make the analyzer unusable for unrelated files. Unchanged analysis is cached by canonical file identity plus content fingerprint and automatically invalidates when source content changes.
 
 The server must never `require` arbitrary project/package source files for discovery and must never use Reflection against host application classes as its primary analysis mechanism.
 
@@ -1062,7 +1069,12 @@ Foundation-MCP/
 │   │   ├── InstalledPackage.php
 │   │   └── DependencyGraph.php
 │   ├── Analysis/
+│   │   ├── AnalyzedFile.php
 │   │   ├── PhpAnalyzer.php
+│   │   ├── Internal/
+│   │   │   ├── PhpDeclarationVisitor.php
+│   │   │   ├── PhpReferenceVisitor.php
+│   │   │   └── PhpLiteralVisitor.php
 │   │   ├── SymbolIndex.php
 │   │   ├── ReferenceIndex.php
 │   │   ├── SearchEngine.php
@@ -1289,7 +1301,7 @@ The first release includes the entire intended scope; no desired capability is i
 [x] Composer exact-version/package graph
 [x] installed Foundation ModuleCatalog parser
 [x] purpose-first module intelligence
-[ ] PHPForge-backed AST/source analyzer
+[x] PHPForge-backed AST/source analyzer
 [ ] lazy symbol index
 [ ] lazy reference/usage index
 [ ] deterministic search/read
@@ -1349,8 +1361,9 @@ Update this checklist after each meaningful implementation chunk. Do not mark an
 - `feat: add project detection and filesystem security model` — strict CLI root handling; immutable project context; renamed-canonical Infbyte/custom/unsupported classification; Composer-autoload source roots; project/package path containment; traversal/absolute/symlink-escape rejection; hard secret-file policy; output redaction; PHPForge parser parse-probe; unit coverage; PHP 8.4 syntax validation and local smoke validation.
 - `feat: add Composer and Foundation package intelligence` — distinct declared/locked/installed package truth; runtime/dev direct dependencies; bounded transitive graph; source-reference and install-path state; `installed.json` normal path with root-proven `InstalledVersions` fallback; no `installed.php` execution; installed package composer metadata fallback; platform requirements; canonical package ownership/roots; Foundation exact-version diagnostics; lock/install mismatch diagnostics; focused unit coverage; PHP 8.4 syntax and standalone smoke validation.
 - `9b0844b5` — bounded static parsing of installed Foundation `ModuleCatalog::MODULES` through the PHPForge-provided PHP parser; literal-only evaluation with dynamic-expression rejection; module/alias/package resolution with ambiguity checks; Composer package/config correlation; built-in/package/config/runtime-activation-safe statuses; ModuleCatalog doctor gate; focused unit coverage added; PHP 8.4 syntax validation passed locally. The dependency-complete Pest/PHPForge suite remains for CI/integration validation.
+- `feat: add PHP source analysis core` — PHPForge-supplied in-process PHP parser backend; compact declarations/signatures/imports/inheritance/traits/attributes/PHPDoc extraction; promoted properties/constants/enum cases; resolved/lexical/dynamic reference extraction; bounded literal arrays; explicit-project and explicit-package path authorization; secret/file/size controls; file-local parse errors; content-fingerprint cache invalidation; focused unit coverage. Local PHP 8.4 syntax validation passed for the analyzer result/entry point and literal visitor; the dependency-complete Pest/PHPForge suite remains for CI/integration validation.
 
-The overall `mcp/sdk STDIO integration`, `explicit MCP registration`, `doctor command`, and broad test-suite checklist entries remain intentionally open until their complete production contracts are exercised by protocol/integration/ecosystem coverage.
+The overall `mcp/sdk STDIO integration`, `explicit MCP registration`, `doctor command`, `lazy in-memory cache/invalidation` and broad test-suite checklist entries remain intentionally open until their complete production contracts are exercised across the relevant service/index/protocol/integration layers.
 
 ---
 
