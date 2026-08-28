@@ -8,6 +8,7 @@ use Infocyph\FoundationMcp\Composer\ComposerInspector;
 use Infocyph\FoundationMcp\Foundation\Internal\RouteValueResolver;
 use Infocyph\FoundationMcp\Project\Project;
 use Infocyph\FoundationMcp\Security\PathPolicy;
+use Infocyph\FoundationMcp\Security\Redactor;
 use Infocyph\FoundationMcp\Security\SecretPolicy;
 use PhpParser\Error;
 use PhpParser\Node;
@@ -33,6 +34,7 @@ final class FoundationWorkerInspector
     private readonly Parser $parser;
     private readonly PathPolicy $paths;
     private readonly SecretPolicy $secrets;
+    private readonly Redactor $redactor;
     private readonly RouteValueResolver $values;
 
     /** @var list<array{code:string,source:?string,line:?int,message:string}> */
@@ -49,6 +51,7 @@ final class FoundationWorkerInspector
         $this->parser = $parser ?? (new ParserFactory())->createForNewestSupportedVersion();
         $this->paths = new PathPolicy($project->root);
         $this->secrets = new SecretPolicy();
+        $this->redactor = new Redactor();
         $this->values = new RouteValueResolver();
     }
 
@@ -244,12 +247,29 @@ final class FoundationWorkerInspector
             'name' => $name,
             'handler' => $handler,
             'registration' => $registration,
-            'options' => array_slice($options, 0, 64, true),
+            'options' => $this->sanitizeOptions(array_slice($options, 0, 64, true)),
             'source' => self::SOURCE,
             'line' => $line,
             'status' => $handler === null ? 'dynamic' : 'resolved',
             'conditional' => $conditional,
         ];
+    }
+
+    private function sanitizeOptions(array $options): array
+    {
+        $result = [];
+        foreach ($options as $key => $value) {
+            if (is_string($key) && preg_match('~(?:password|secret|token|api[_-]?key|private[_-]?key|authorization|cookie|credential|dsn)~i', $key) === 1) {
+                $result[$key] = '[REDACTED]';
+                continue;
+            }
+            if (is_array($value)) {
+                $result[$key] = $this->sanitizeOptions(array_slice($value, 0, 64, true));
+                continue;
+            }
+            $result[$key] = is_string($value) ? $this->redactor->redact($value) : $value;
+        }
+        return $result;
     }
 
     private function diagnostic(string $code, ?int $line, string $message): void
