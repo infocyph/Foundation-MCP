@@ -300,13 +300,17 @@ final class ReferenceIndex
     private function proven(array $reference, array $symbolsByTarget): bool
     {
         $kinds = $symbolsByTarget[strtolower($reference['target'])] ?? [];
+        $compatible = array_values(array_filter(
+            $kinds,
+            fn (string $kind): bool => $this->compatibleKind($reference, $kind),
+        ));
 
-        if (count($kinds) !== 1) {
-            return false;
-        }
+        return count($compatible) === 1;
+    }
 
-        $kind = $kinds[0];
-
+    /** @param IndexedReference $reference */
+    private function compatibleKind(array $reference, string $kind): bool
+    {
         return match ($reference['relationship']) {
             'new', 'extends', 'implements', 'trait-use', 'attribute', 'type' => in_array(
                 $kind,
