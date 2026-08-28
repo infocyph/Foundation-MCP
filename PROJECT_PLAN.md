@@ -301,7 +301,9 @@ runtime_activation_unknown
 
 Never equate package presence with runtime activation. Foundation capabilities are lazy and package presence alone is not activation.
 
-Do not execute `ModuleCatalog` or bootstrap Foundation just to read it; parse installed source statically through the PHPForge-provided parser stack.
+Do not execute `ModuleCatalog` or bootstrap Foundation just to read it; parse installed source statically through the PHPForge-provided parser stack. The catalog reader accepts only literal catalog data, rejects executable/dynamic expressions and keeps reads bounded to the Composer-authorized Foundation install root.
+
+The initial catalog-intelligence layer derives catalog, package, config and runtime-unknown statuses without scanning the project. `statically_referenced` is added later by the reference index when project-source evidence exists.
 
 ---
 
@@ -979,6 +981,8 @@ composer_lock_invalid
 installed_metadata_missing
 installed_metadata_invalid
 dependency_state_mismatch
+module_catalog_missing
+module_catalog_invalid
 resource_not_found
 package_not_installed
 symbol_not_found
@@ -1283,8 +1287,8 @@ The first release includes the entire intended scope; no desired capability is i
 [x] Infbyte/custom-Foundation project detection
 [x] secure root/package path model
 [x] Composer exact-version/package graph
-[ ] installed Foundation ModuleCatalog parser
-[ ] purpose-first module intelligence
+[x] installed Foundation ModuleCatalog parser
+[x] purpose-first module intelligence
 [ ] PHPForge-backed AST/source analyzer
 [ ] lazy symbol index
 [ ] lazy reference/usage index
@@ -1344,6 +1348,7 @@ Update this checklist after each meaningful implementation chunk. Do not mark an
 - `ac78615a` — initial `doctor` dependency checks for the MCP SDK, PHPForge and PHP parser availability.
 - `feat: add project detection and filesystem security model` — strict CLI root handling; immutable project context; renamed-canonical Infbyte/custom/unsupported classification; Composer-autoload source roots; project/package path containment; traversal/absolute/symlink-escape rejection; hard secret-file policy; output redaction; PHPForge parser parse-probe; unit coverage; PHP 8.4 syntax validation and local smoke validation.
 - `feat: add Composer and Foundation package intelligence` — distinct declared/locked/installed package truth; runtime/dev direct dependencies; bounded transitive graph; source-reference and install-path state; `installed.json` normal path with root-proven `InstalledVersions` fallback; no `installed.php` execution; installed package composer metadata fallback; platform requirements; canonical package ownership/roots; Foundation exact-version diagnostics; lock/install mismatch diagnostics; focused unit coverage; PHP 8.4 syntax and standalone smoke validation.
+- `9b0844b5` — bounded static parsing of installed Foundation `ModuleCatalog::MODULES` through the PHPForge-provided PHP parser; literal-only evaluation with dynamic-expression rejection; module/alias/package resolution with ambiguity checks; Composer package/config correlation; built-in/package/config/runtime-activation-safe statuses; ModuleCatalog doctor gate; focused unit coverage added; PHP 8.4 syntax validation passed locally. The dependency-complete Pest/PHPForge suite remains for CI/integration validation.
 
 The overall `mcp/sdk STDIO integration`, `explicit MCP registration`, `doctor command`, and broad test-suite checklist entries remain intentionally open until their complete production contracts are exercised by protocol/integration/ecosystem coverage.
 
