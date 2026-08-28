@@ -57,11 +57,13 @@ final readonly class Arguments
             }
 
             if ($argument === '--root') {
-                $root = $argv[++$index] ?? null;
+                $root = $argv[$index + 1] ?? null;
 
-                if (!is_string($root) || $root === '') {
+                if (!is_string($root) || $root === '' || str_starts_with($root, '-')) {
                     throw new InvalidArgumentException('--root requires a path.');
                 }
+
+                ++$index;
 
                 continue;
             }
@@ -69,7 +71,7 @@ final readonly class Arguments
             if (str_starts_with($argument, '--root=')) {
                 $root = substr($argument, 7);
 
-                if ($root === '') {
+                if ($root === '' || str_starts_with($root, '-')) {
                     throw new InvalidArgumentException('--root requires a path.');
                 }
 
