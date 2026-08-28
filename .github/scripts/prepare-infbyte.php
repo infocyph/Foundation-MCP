@@ -3,16 +3,14 @@
 declare(strict_types=1);
 
 if ($argc !== 3) {
-    fwrite(STDERR, "Usage: prepare-infbyte.php <infbyte-root> <foundation-mcp-root>\n");
-    exit(2);
+    throw new InvalidArgumentException('Usage: prepare-infbyte.php <infbyte-root> <foundation-mcp-root>');
 }
 
 $infbyteRoot = realpath($argv[1]);
 $foundationMcpRoot = realpath($argv[2]);
 
 if (!is_string($infbyteRoot) || !is_string($foundationMcpRoot)) {
-    fwrite(STDERR, "Both repository roots must exist.\n");
-    exit(2);
+    throw new RuntimeException('Both repository roots must exist.');
 }
 
 $path = $infbyteRoot.DIRECTORY_SEPARATOR.'composer.json';
@@ -34,6 +32,7 @@ $repository = [
 $data['repositories'] = array_values(array_merge([$repository], is_array($data['repositories'] ?? null) ? $data['repositories'] : []));
 $data['require-dev'] = is_array($data['require-dev'] ?? null) ? $data['require-dev'] : [];
 $data['require-dev']['infocyph/foundation-mcp'] = '^1.0';
+$data['require-dev']['infocyph/phpforge'] = 'dev-main@dev';
 ksort($data['require-dev'], SORT_STRING);
 
 file_put_contents(
