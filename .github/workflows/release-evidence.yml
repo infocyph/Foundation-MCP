@@ -27,7 +27,7 @@ jobs:
           tools: composer:v2
       - run: composer install --no-interaction --prefer-dist
       - run: composer ic:ci --without-analysis
-      - run: php vendor/bin/foundation-mcp --version
+      - run: php bin/foundation-mcp --version
 
   linux-php85:
     name: "Linux / PHP 8.5"
@@ -42,7 +42,7 @@ jobs:
           tools: composer:v2
       - run: composer install --no-interaction --prefer-dist
       - run: composer ic:ci --without-analysis
-      - run: php vendor/bin/foundation-mcp --version
+      - run: php bin/foundation-mcp --version
 
   windows-php84:
     name: "Windows / PHP 8.4"
@@ -57,7 +57,7 @@ jobs:
           tools: composer:v2
       - run: composer install --no-interaction --prefer-dist
       - run: composer ic:ci --without-analysis
-      - run: php vendor/bin/foundation-mcp --version
+      - run: php bin/foundation-mcp --version
 
   windows-php85:
     name: "Windows / PHP 8.5"
@@ -72,7 +72,7 @@ jobs:
           tools: composer:v2
       - run: composer install --no-interaction --prefer-dist
       - run: composer ic:ci --without-analysis
-      - run: php vendor/bin/foundation-mcp --version
+      - run: php bin/foundation-mcp --version
 
   protocol:
     name: "Official SDK STDIO protocol"
