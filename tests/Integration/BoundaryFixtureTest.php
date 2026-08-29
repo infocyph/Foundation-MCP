@@ -173,7 +173,7 @@ final class BoundaryFixtureTest extends TestCase
             $finder = new SourceFileFinder($project, new ComposerInspector($project));
 
             $this->expectException(RuntimeException::class);
-            $this->expectExceptionMessage('1,024 autoload-path limit');
+            $this->expectExceptionMessage('1024 autoload-path limit');
             $finder->package('vendor/oversized-package');
         } finally {
             TempProject::remove($projectRoot);
