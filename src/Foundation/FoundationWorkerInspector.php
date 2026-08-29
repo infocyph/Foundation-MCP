@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Infocyph\FoundationMcp\Foundation;
 
+use Infocyph\FoundationMcp\Analysis\Internal\PhpNodeBudgetVisitor;
 use Infocyph\FoundationMcp\Composer\ComposerInspector;
 use Infocyph\FoundationMcp\Foundation\Internal\RouteValueResolver;
 use Infocyph\FoundationMcp\Project\Project;
@@ -27,6 +28,12 @@ use RuntimeException;
 final class FoundationWorkerInspector
 {
     private const int MAX_DIAGNOSTICS = 100;
+
+    private const int MAX_OPTION_DEPTH = 32;
+
+    private const int MAX_OPTION_ITEMS = 64;
+
+    private const int MAX_RECURSION_DEPTH = 64;
 
     private const int MAX_SOURCE_BYTES = 1_048_576;
 
@@ -129,23 +136,44 @@ final class FoundationWorkerInspector
 
     private function diagnostic(string $code, ?int $line, string $message): void
     {
-        if (count($this->diagnostics) < self::MAX_DIAGNOSTICS) {
-            $this->diagnostics[] = ['code' => $code, 'source' => self::SOURCE, 'line' => $line, 'message' => $message];
+        $count = count($this->diagnostics);
+        if ($count >= self::MAX_DIAGNOSTICS) {
+            return;
         }
+        if ($count === self::MAX_DIAGNOSTICS - 1 && $code !== 'diagnostic_limit_exceeded') {
+            $this->diagnostics[] = [
+                'code' => 'diagnostic_limit_exceeded',
+                'source' => self::SOURCE,
+                'line' => null,
+                'message' => sprintf('Foundation worker diagnostics are limited to %d entries.', self::MAX_DIAGNOSTICS),
+            ];
+
+            return;
+        }
+
+        $this->diagnostics[] = ['code' => $code, 'source' => self::SOURCE, 'line' => $line, 'message' => $message];
+    }
+
+    private function diagnosticOnce(string $code, ?int $line, string $message): void
+    {
+        foreach ($this->diagnostics as $diagnostic) {
+            if ($diagnostic['code'] === $code) {
+                return;
+            }
+        }
+
+        $this->diagnostic($code, $line, $message);
     }
 
     /** @return list<Node\Stmt>|null */
     private function parse(string $path): ?array
     {
-        $size = filesize($path);
-        if ($size === false || $size > self::MAX_SOURCE_BYTES) {
-            $this->diagnostic('worker_source_too_large', null, sprintf('Worker source exceeds %d bytes.', self::MAX_SOURCE_BYTES));
-
-            return null;
-        }
-        $source = file_get_contents($path);
-        if (!is_string($source) || str_contains($source, "\0")) {
-            $this->diagnostic('worker_source_unreadable', null, 'Worker source is unreadable or binary.');
+        $source = $this->read($path);
+        if ($source === null) {
+            $this->diagnostic('worker_source_unreadable', null, sprintf(
+                'Worker source is unreadable, binary, invalid UTF-8, or exceeds %d bytes.',
+                self::MAX_SOURCE_BYTES,
+            ));
 
             return null;
         }
@@ -153,14 +181,26 @@ final class FoundationWorkerInspector
         try {
             $nodes = $this->parser->parse($source) ?? [];
         } catch (Error $error) {
-            $this->diagnostic('parse_error', $error->getStartLine(), $error->getMessage());
+            $this->diagnostic('parse_error', $error->getStartLine(), $error->getRawMessage());
 
             return null;
         }
         $traverser = new NodeTraverser();
+        $traverser->addVisitor(new PhpNodeBudgetVisitor());
         $traverser->addVisitor(new NameResolver(null, ['preserveOriginalNames' => true, 'replaceNodes' => false]));
 
-        return $traverser->traverse($nodes);
+        try {
+            /** @var list<Node\Stmt> $resolved */
+            $resolved = $traverser->traverse($nodes);
+
+            return $resolved;
+        } catch (Error $error) {
+            $this->diagnostic('parse_error', $error->getStartLine(), $error->getRawMessage());
+        } catch (RuntimeException $error) {
+            $this->diagnostic('inspection_limit_exceeded', null, $error->getMessage());
+        }
+
+        return null;
     }
 
     private function providerContract(?Node\Param $parameter): bool
@@ -172,6 +212,31 @@ final class FoundationWorkerInspector
         $resolved = $this->values->resolvedName($type);
 
         return str_ends_with(strtolower($resolved), '\\workerprovider') || strtolower($resolved) === 'workerprovider';
+    }
+
+    private function read(string $path): ?string
+    {
+        $handle = fopen($path, 'rb');
+        if ($handle === false) {
+            return null;
+        }
+
+        try {
+            $source = stream_get_contents($handle, self::MAX_SOURCE_BYTES + 1);
+        } finally {
+            fclose($handle);
+        }
+
+        if (
+            !is_string($source)
+            || strlen($source) > self::MAX_SOURCE_BYTES
+            || str_contains($source, "\0")
+            || preg_match('//u', $source) !== 1
+        ) {
+            return null;
+        }
+
+        return $source;
     }
 
     private function result(?string $version, string $contract): array
@@ -188,8 +253,26 @@ final class FoundationWorkerInspector
         ];
     }
 
-    private function sanitizeOptions(array $options): array
+    private function sanitizeOptions(array $options, int $depth = 0): array
     {
+        if ($depth >= self::MAX_OPTION_DEPTH) {
+            $this->diagnosticOnce(
+                'worker_option_depth_exceeded',
+                null,
+                sprintf('Foundation worker option redaction is limited to %d levels.', self::MAX_OPTION_DEPTH),
+            );
+
+            return [];
+        }
+        if (count($options) > self::MAX_OPTION_ITEMS) {
+            $this->diagnosticOnce(
+                'worker_option_limit_exceeded',
+                null,
+                sprintf('Foundation worker option objects are limited to %d entries per level.', self::MAX_OPTION_ITEMS),
+            );
+            $options = array_slice($options, 0, self::MAX_OPTION_ITEMS, true);
+        }
+
         $result = [];
         foreach ($options as $key => $value) {
             if (is_string($key) && preg_match('~(?:password|secret|token|api[_-]?key|private[_-]?key|authorization|cookie|credential|dsn)~i', $key) === 1) {
@@ -198,7 +281,7 @@ final class FoundationWorkerInspector
                 continue;
             }
             if (is_array($value)) {
-                $result[$key] = $this->sanitizeOptions(array_slice($value, 0, 64, true));
+                $result[$key] = $this->sanitizeOptions($value, $depth + 1);
 
                 continue;
             }
@@ -262,8 +345,18 @@ final class FoundationWorkerInspector
     }
 
     /** @param list<Node\Stmt> $statements */
-    private function scanStatements(array $statements, string $provider, bool $conditional): void
+    private function scanStatements(array $statements, string $provider, bool $conditional, int $depth = 0): void
     {
+        if ($depth >= self::MAX_RECURSION_DEPTH) {
+            $this->diagnosticOnce(
+                'worker_traversal_limit_exceeded',
+                null,
+                sprintf('Foundation worker statement traversal is limited to %d levels.', self::MAX_RECURSION_DEPTH),
+            );
+
+            return;
+        }
+
         foreach ($statements as $statement) {
             if (count($this->workers) >= self::MAX_WORKERS) {
                 $this->diagnostic('output_limit_exceeded', $statement->getStartLine(), sprintf('Foundation workers are limited to %d entries.', self::MAX_WORKERS));
@@ -276,18 +369,18 @@ final class FoundationWorkerInspector
                 continue;
             }
             if ($statement instanceof Node\Stmt\If_) {
-                $this->scanStatements($statement->stmts, $provider, true);
+                $this->scanStatements($statement->stmts, $provider, true, $depth + 1);
                 foreach ($statement->elseifs as $elseif) {
-                    $this->scanStatements($elseif->stmts, $provider, true);
+                    $this->scanStatements($elseif->stmts, $provider, true, $depth + 1);
                 }
                 if ($statement->else !== null) {
-                    $this->scanStatements($statement->else->stmts, $provider, true);
+                    $this->scanStatements($statement->else->stmts, $provider, true, $depth + 1);
                 }
 
                 continue;
             }
             if ($statement instanceof Node\Stmt\Foreach_ || $statement instanceof Node\Stmt\For_ || $statement instanceof Node\Stmt\While_ || $statement instanceof Node\Stmt\Do_) {
-                $this->scanStatements($statement->stmts, $provider, true);
+                $this->scanStatements($statement->stmts, $provider, true, $depth + 1);
             }
         }
     }
@@ -313,7 +406,7 @@ final class FoundationWorkerInspector
             'name' => $name,
             'handler' => $handler,
             'registration' => $registration,
-            'options' => $this->sanitizeOptions(array_slice($options, 0, 64, true)),
+            'options' => $this->sanitizeOptions($options),
             'source' => self::SOURCE,
             'line' => $line,
             'status' => $handler === null ? 'dynamic' : 'resolved',
