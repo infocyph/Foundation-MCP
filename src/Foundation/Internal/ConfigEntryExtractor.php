@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Infocyph\FoundationMcp\Foundation\Internal;
 
+use Infocyph\FoundationMcp\Analysis\Internal\PhpNodeBudgetVisitor;
 use Infocyph\FoundationMcp\Security\Redactor;
 use PhpParser\Error;
 use PhpParser\Node;
@@ -19,6 +20,8 @@ use RuntimeException;
  */
 final class ConfigEntryExtractor
 {
+    private const int MAX_CLASSES_PER_ENTRY = 32;
+
     private const int MAX_DEPTH = 64;
 
     private const int MAX_DIAGNOSTICS = 100;
@@ -65,7 +68,7 @@ final class ConfigEntryExtractor
         return $entries;
     }
 
-    /** @param list<Node\Stmt> $nodes @return list<Node\Stmt\Class_> */
+    /** @return list<Node\Stmt\Class_> */
     public function classes(array $nodes): array
     {
         $classes = [];
@@ -173,6 +176,7 @@ final class ConfigEntryExtractor
 
         $traverser = new NodeTraverser();
         $traverser->addVisitor(new NameResolver(null, ['preserveOriginalNames' => true, 'replaceNodes' => false]));
+        $traverser->addVisitor(new PhpNodeBudgetVisitor());
 
         try {
             /** @var list<Node\Stmt> $resolved */
@@ -181,6 +185,10 @@ final class ConfigEntryExtractor
             return $resolved;
         } catch (Error $error) {
             $this->diagnostic('parse_error', $source, $error->getStartLine(), $error->getRawMessage());
+
+            return null;
+        } catch (RuntimeException $error) {
+            $this->diagnostic('inspection_limit_exceeded', $source, null, $error->getMessage());
 
             return null;
         }
@@ -218,6 +226,21 @@ final class ConfigEntryExtractor
         return null;
     }
 
+    /** @param list<string> $classes @return list<string> */
+    private function classesForEntry(array $classes, string $source, int $line): array
+    {
+        if (count($classes) > self::MAX_CLASSES_PER_ENTRY) {
+            $this->diagnostic(
+                'class_references_truncated',
+                $source,
+                $line,
+                sprintf('Config entry class references are limited to %d values.', self::MAX_CLASSES_PER_ENTRY),
+            );
+        }
+
+        return array_slice($classes, 0, self::MAX_CLASSES_PER_ENTRY);
+    }
+
     private function diagnostic(string $code, ?string $source, ?int $line, string $message): void
     {
         if (count($this->diagnostics) < self::MAX_DIAGNOSTICS) {
@@ -227,7 +250,16 @@ final class ConfigEntryExtractor
                 'line' => $line,
                 'message' => $message,
             ];
+
+            return;
         }
+
+        $this->diagnostics[self::MAX_DIAGNOSTICS - 1] = [
+            'code' => 'diagnostics_truncated',
+            'source' => null,
+            'line' => null,
+            'message' => sprintf('Config extraction diagnostics are limited to %d entries.', self::MAX_DIAGNOSTICS),
+        ];
     }
 
     /** @param list<EnvironmentRef> $environment @param list<string> $classes @return ConfigEntry */
@@ -320,7 +352,7 @@ final class ConfigEntryExtractor
                 $result['status'] === 'literal' ? $this->sanitize($path, $result['value']) : null,
                 $result['status'],
                 $this->sanitizeEnvironment($path, $result['environment']),
-                array_slice($result['classes'], 0, 32),
+                $this->classesForEntry($result['classes'], $source, $item->getStartLine()),
                 $owner,
                 $source,
                 $item->getStartLine(),
