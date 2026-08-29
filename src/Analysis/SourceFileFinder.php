@@ -30,6 +30,8 @@ final readonly class SourceFileFinder
 
     private const int MAX_FILES = 20_000;
 
+    private const int MAX_PACKAGE_AUTOLOAD_PATHS = 1_024;
+
     public function __construct(
         private Project $project,
         private ComposerInspector $composer,
@@ -198,6 +200,7 @@ final readonly class SourceFileFinder
     private function packageRoots(InstalledPackage $package, PathPolicy $paths): array
     {
         $candidates = [];
+        $count = 0;
 
         foreach (['psr-4', 'psr-0'] as $key) {
             $mapping = $package->autoload[$key] ?? null;
@@ -208,9 +211,17 @@ final readonly class SourceFileFinder
 
             foreach ($mapping as $value) {
                 foreach ((array) $value as $candidate) {
-                    if (is_string($candidate)) {
-                        $candidates[] = $candidate;
+                    if (!is_string($candidate)) {
+                        continue;
                     }
+                    if (++$count > self::MAX_PACKAGE_AUTOLOAD_PATHS) {
+                        throw new RuntimeException(sprintf(
+                            'Package source-root discovery exceeds the %d autoload-path limit.',
+                            self::MAX_PACKAGE_AUTOLOAD_PATHS,
+                        ));
+                    }
+
+                    $candidates[] = $candidate;
                 }
             }
         }
@@ -223,9 +234,17 @@ final readonly class SourceFileFinder
             }
 
             foreach ($values as $candidate) {
-                if (is_string($candidate)) {
-                    $candidates[] = $candidate;
+                if (!is_string($candidate)) {
+                    continue;
                 }
+                if (++$count > self::MAX_PACKAGE_AUTOLOAD_PATHS) {
+                    throw new RuntimeException(sprintf(
+                        'Package source-root discovery exceeds the %d autoload-path limit.',
+                        self::MAX_PACKAGE_AUTOLOAD_PATHS,
+                    ));
+                }
+
+                $candidates[] = $candidate;
             }
         }
 
