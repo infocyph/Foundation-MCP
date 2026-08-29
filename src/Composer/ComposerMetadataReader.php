@@ -11,7 +11,15 @@ use Throwable;
 
 final class ComposerMetadataReader
 {
-    private const MAX_METADATA_BYTES = 32 * 1024 * 1024;
+    private const int JSON_DEPTH = 64;
+
+    private const int MAX_DIAGNOSTICS = 100;
+
+    private const int MAX_METADATA_BYTES = 32 * 1024 * 1024;
+
+    private const int MAX_PACKAGE_CACHE_ENTRIES = 256;
+
+    private const int MAX_PACKAGES = 10_000;
 
     private const string PACKAGE_PATTERN = '~^[a-z0-9_.-]+/[a-z0-9_.-]+$~D';
 
@@ -30,6 +38,9 @@ final class ComposerMetadataReader
 
     /** @var array<string, array<string, mixed>> */
     private array $packageComposer = [];
+
+    /** @var list<string> */
+    private array $packageComposerOrder = [];
 
     public function __construct(
         private readonly Project $project,
@@ -150,22 +161,27 @@ final class ComposerMetadataReader
         $path = $installPath . DIRECTORY_SEPARATOR . 'composer.json';
 
         if (!is_file($path)) {
-            return $this->packageComposer[$installPath] = [];
+            return $this->rememberPackageComposer($installPath, []);
         }
 
         try {
-            $decoded = json_decode($this->readJsonSource($path, $name . '/composer.json'), true, flags: JSON_THROW_ON_ERROR);
+            $decoded = json_decode(
+                $this->readJsonSource($path, $name . '/composer.json'),
+                true,
+                self::JSON_DEPTH,
+                JSON_THROW_ON_ERROR,
+            );
         } catch (JsonException $exception) {
-            $this->diagnostics[] = [
-                'code' => 'package_composer_invalid',
-                'package' => $name,
-                'message' => 'Installed package composer.json is invalid: ' . $exception->getMessage(),
-            ];
+            $this->diagnostic(
+                'package_composer_invalid',
+                $name,
+                'Installed package composer.json cannot be read as valid JSON: ' . $exception->getMessage(),
+            );
 
-            return $this->packageComposer[$installPath] = [];
+            return $this->rememberPackageComposer($installPath, []);
         }
 
-        return $this->packageComposer[$installPath] = is_array($decoded) ? $decoded : [];
+        return $this->rememberPackageComposer($installPath, is_array($decoded) ? $decoded : []);
     }
 
     private function absolutePath(string $path): bool
@@ -175,6 +191,19 @@ final class ComposerMetadataReader
         return str_starts_with($normalized, '/')
             || str_starts_with($normalized, '//')
             || preg_match('/^[A-Za-z]:\//', $normalized) === 1;
+    }
+
+    private function diagnostic(string $code, ?string $package, string $message): void
+    {
+        if (count($this->diagnostics) >= self::MAX_DIAGNOSTICS) {
+            return;
+        }
+
+        $entry = ['code' => $code, 'package' => $package, 'message' => $message];
+
+        if (!in_array($entry, $this->diagnostics, true)) {
+            $this->diagnostics[] = $entry;
+        }
     }
 
     private function installedJsonPath(): string
@@ -205,23 +234,28 @@ final class ComposerMetadataReader
         }
 
         try {
-            $decoded = json_decode($this->readJsonSource($path, 'vendor/composer/installed.json'), true, flags: JSON_THROW_ON_ERROR);
+            $decoded = json_decode(
+                $this->readJsonSource($path, 'vendor/composer/installed.json'),
+                true,
+                self::JSON_DEPTH,
+                JSON_THROW_ON_ERROR,
+            );
         } catch (JsonException $exception) {
-            $this->diagnostics[] = [
-                'code' => 'installed_metadata_invalid',
-                'package' => null,
-                'message' => 'vendor/composer/installed.json is invalid JSON: ' . $exception->getMessage(),
-            ];
+            $this->diagnostic(
+                'installed_metadata_invalid',
+                null,
+                'vendor/composer/installed.json is invalid JSON: ' . $exception->getMessage(),
+            );
 
             return null;
         }
 
         if (!is_array($decoded)) {
-            $this->diagnostics[] = [
-                'code' => 'installed_metadata_invalid',
-                'package' => null,
-                'message' => 'vendor/composer/installed.json did not decode to an object or list.',
-            ];
+            $this->diagnostic(
+                'installed_metadata_invalid',
+                null,
+                'vendor/composer/installed.json did not decode to an object or list.',
+            );
 
             return null;
         }
@@ -229,11 +263,21 @@ final class ComposerMetadataReader
         $items = is_array($decoded['packages'] ?? null) ? $decoded['packages'] : $decoded;
 
         if (!array_is_list($items)) {
-            $this->diagnostics[] = [
-                'code' => 'installed_metadata_invalid',
-                'package' => null,
-                'message' => 'vendor/composer/installed.json has an unsupported structure.',
-            ];
+            $this->diagnostic(
+                'installed_metadata_invalid',
+                null,
+                'vendor/composer/installed.json has an unsupported structure.',
+            );
+
+            return null;
+        }
+
+        if (count($items) > self::MAX_PACKAGES) {
+            $this->diagnostic(
+                'installed_metadata_too_large',
+                null,
+                'vendor/composer/installed.json exceeds the 10,000 package metadata limit.',
+            );
 
             return null;
         }
@@ -262,11 +306,11 @@ final class ComposerMetadataReader
     private function loadInstalledFromRuntime(): ?array
     {
         if (!$this->runtimeMatchesProject()) {
-            $this->diagnostics[] = [
-                'code' => 'installed_metadata_missing',
-                'package' => null,
-                'message' => 'Installed Composer metadata is unavailable for the resolved project.',
-            ];
+            $this->diagnostic(
+                'installed_metadata_missing',
+                null,
+                'Installed Composer metadata is unavailable for the resolved project.',
+            );
 
             return null;
         }
@@ -279,6 +323,16 @@ final class ComposerMetadataReader
                     continue;
                 }
 
+                if (count($packages) >= self::MAX_PACKAGES) {
+                    $this->diagnostic(
+                        'installed_metadata_too_large',
+                        null,
+                        'Composer runtime metadata exceeds the 10,000 package limit.',
+                    );
+
+                    return null;
+                }
+
                 $packages[] = [
                     'name' => $name,
                     'version' => InstalledVersions::getPrettyVersion($name) ?? InstalledVersions::getVersion($name),
@@ -289,11 +343,11 @@ final class ComposerMetadataReader
 
             return $this->installed = $packages;
         } catch (Throwable) {
-            $this->diagnostics[] = [
-                'code' => 'installed_metadata_missing',
-                'package' => null,
-                'message' => 'Composer runtime metadata could not be read for the resolved project.',
-            ];
+            $this->diagnostic(
+                'installed_metadata_missing',
+                null,
+                'Composer runtime metadata could not be read for the resolved project.',
+            );
 
             return null;
         }
@@ -310,33 +364,58 @@ final class ComposerMetadataReader
         $path = $this->project->root . DIRECTORY_SEPARATOR . 'composer.lock';
 
         if (!is_file($path)) {
-            $this->diagnostics[] = [
-                'code' => 'composer_lock_missing',
-                'package' => null,
-                'message' => 'composer.lock is missing; exact locked versions are unavailable.',
-            ];
+            $this->diagnostic(
+                'composer_lock_missing',
+                null,
+                'composer.lock is missing; exact locked versions are unavailable.',
+            );
 
             return null;
         }
 
         try {
-            $lock = json_decode($this->readJsonSource($path, 'composer.lock'), true, flags: JSON_THROW_ON_ERROR);
+            $lock = json_decode(
+                $this->readJsonSource($path, 'composer.lock'),
+                true,
+                self::JSON_DEPTH,
+                JSON_THROW_ON_ERROR,
+            );
         } catch (JsonException $exception) {
-            $this->diagnostics[] = [
-                'code' => 'composer_lock_invalid',
-                'package' => null,
-                'message' => 'composer.lock is invalid JSON: ' . $exception->getMessage(),
-            ];
+            $this->diagnostic(
+                'composer_lock_invalid',
+                null,
+                'composer.lock is invalid JSON: ' . $exception->getMessage(),
+            );
 
             return null;
         }
 
         if (!is_array($lock)) {
-            $this->diagnostics[] = [
-                'code' => 'composer_lock_invalid',
-                'package' => null,
-                'message' => 'composer.lock did not decode to an object.',
-            ];
+            $this->diagnostic(
+                'composer_lock_invalid',
+                null,
+                'composer.lock did not decode to an object.',
+            );
+
+            return null;
+        }
+
+        $packageCount = 0;
+
+        foreach (['packages', 'packages-dev'] as $key) {
+            $items = $lock[$key] ?? [];
+
+            if (is_array($items)) {
+                $packageCount += count($items);
+            }
+        }
+
+        if ($packageCount > self::MAX_PACKAGES) {
+            $this->diagnostic(
+                'composer_lock_too_large',
+                null,
+                'composer.lock exceeds the 10,000 package metadata limit.',
+            );
 
             return null;
         }
@@ -344,18 +423,46 @@ final class ComposerMetadataReader
         return $this->lock = $lock;
     }
 
-    private function readJsonSource(string $path, string $label): string
+    /** @param array<string, mixed> $composer @return array<string, mixed> */
+    private function rememberPackageComposer(string $installPath, array $composer): array
     {
-        $size = filesize($path);
+        if (!array_key_exists($installPath, $this->packageComposer)) {
+            if (count($this->packageComposerOrder) >= self::MAX_PACKAGE_CACHE_ENTRIES) {
+                $oldest = array_shift($this->packageComposerOrder);
 
-        if ($size === false || $size > self::MAX_METADATA_BYTES) {
-            throw new JsonException($label . ' exceeds the 32 MiB metadata limit.');
+                if (is_string($oldest)) {
+                    unset($this->packageComposer[$oldest]);
+                }
+            }
+
+            $this->packageComposerOrder[] = $installPath;
         }
 
-        $content = file_get_contents($path);
+        $this->packageComposer[$installPath] = $composer;
+
+        return $composer;
+    }
+
+    private function readJsonSource(string $path, string $label): string
+    {
+        $handle = fopen($path, 'rb');
+
+        if ($handle === false) {
+            throw new JsonException('Unable to read ' . $label . '.');
+        }
+
+        try {
+            $content = stream_get_contents($handle, self::MAX_METADATA_BYTES + 1);
+        } finally {
+            fclose($handle);
+        }
 
         if (!is_string($content)) {
             throw new JsonException('Unable to read ' . $label . '.');
+        }
+
+        if (strlen($content) > self::MAX_METADATA_BYTES) {
+            throw new JsonException($label . ' exceeds the 32 MiB metadata limit.');
         }
 
         return $content;
