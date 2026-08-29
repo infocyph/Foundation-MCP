@@ -18,6 +18,14 @@ use PhpParser\Node;
  */
 final readonly class CommandDefinitionScanner
 {
+    private const int MAX_CHAIN_LENGTH = 128;
+
+    private const int MAX_LIST_ITEMS = 256;
+
+    private const int MAX_RECURSION_DEPTH = 64;
+
+    private const int MAX_STRING_BYTES = 8_192;
+
     /** @return CommandMetadata */
     public function scan(Node\Stmt\Class_ $class): array
     {
@@ -89,6 +97,12 @@ final readonly class CommandDefinitionScanner
     /** @param CommandMetadata $metadata @param list<Node\Arg> $args */
     private function argument(array &$metadata, array $args): void
     {
+        if (count($metadata['arguments']) >= self::MAX_LIST_ITEMS) {
+            $metadata['dynamic_fields'][] = 'arguments';
+
+            return;
+        }
+
         $name = $this->stringArg($args, 0, 'name');
         $description = $this->stringArg($args, 1, 'description', '');
         $required = $this->boolArg($args, 2, 'required', false);
@@ -96,7 +110,12 @@ final readonly class CommandDefinitionScanner
         if ($name === null || $description === null || $required === null || $variadic === null) {
             $metadata['dynamic_fields'][] = 'arguments';
         }
-        $metadata['arguments'][] = compact('name', 'description', 'required', 'variadic');
+        $metadata['arguments'][] = [
+            'name' => $name,
+            'description' => $description,
+            'required' => $required,
+            'variadic' => $variadic,
+        ];
     }
 
     /** @param list<Node\Arg> $args */
@@ -126,7 +145,7 @@ final readonly class CommandDefinitionScanner
         $cursor = $call;
 
         while ($cursor instanceof Node\Expr\MethodCall) {
-            if (!$cursor->name instanceof Node\Identifier) {
+            if (count($calls) >= self::MAX_CHAIN_LENGTH || !$cursor->name instanceof Node\Identifier) {
                 return null;
             }
             array_unshift($calls, [$cursor->name->toString(), $cursor->args]);
@@ -167,7 +186,7 @@ final readonly class CommandDefinitionScanner
     /** @param CommandMetadata $metadata */
     private function listField(array &$metadata, string $field, ?string $value): void
     {
-        if ($value === null) {
+        if ($value === null || count($metadata[$field]) >= self::MAX_LIST_ITEMS) {
             $metadata['dynamic_fields'][] = $field;
 
             return;
@@ -176,10 +195,10 @@ final readonly class CommandDefinitionScanner
     }
 
     /** @param list<Node\Stmt> $nodes @param CommandMetadata $metadata */
-    private function markConditional(array $nodes, string $variable, array &$metadata): void
+    private function markConditional(array $nodes, string $variable, array &$metadata, int $depth): void
     {
         foreach ($nodes as $node) {
-            $this->scanNode($node, $variable, $metadata, true);
+            $this->scanNode($node, $variable, $metadata, true, $depth);
         }
     }
 
@@ -191,7 +210,7 @@ final readonly class CommandDefinitionScanner
             return null;
         }
 
-        return $expr instanceof Node\Scalar\String_ ? $expr->value : false;
+        return $expr instanceof Node\Scalar\String_ ? $this->boundedString($expr->value) : false;
     }
 
     private function nullLiteral(Node\Expr $expr): bool
@@ -202,6 +221,12 @@ final readonly class CommandDefinitionScanner
     /** @param CommandMetadata $metadata @param list<Node\Arg> $args */
     private function option(array &$metadata, array $args): void
     {
+        if (count($metadata['options']) >= self::MAX_LIST_ITEMS) {
+            $metadata['dynamic_fields'][] = 'options';
+
+            return;
+        }
+
         $name = $this->stringArg($args, 0, 'name');
         $description = $this->stringArg($args, 1, 'description', '');
         $short = $this->nullableStringArg($args, 2, 'short');
@@ -264,6 +289,8 @@ final readonly class CommandDefinitionScanner
 
         $chain = $this->chain($expr, $variable);
         if ($chain === null) {
+            $metadata['dynamic_fields'][] = 'definition';
+
             return;
         }
 
@@ -273,8 +300,14 @@ final readonly class CommandDefinitionScanner
     }
 
     /** @param CommandMetadata $metadata */
-    private function scanNode(Node $node, string $variable, array &$metadata, bool $conditional): void
+    private function scanNode(Node $node, string $variable, array &$metadata, bool $conditional, int $depth = 0): void
     {
+        if ($depth >= self::MAX_RECURSION_DEPTH) {
+            $metadata['dynamic_fields'][] = 'definition';
+
+            return;
+        }
+
         if ($node instanceof Node\Stmt\Expression) {
             $this->scanExpression($node->expr, $variable, $metadata, $conditional);
 
@@ -282,30 +315,30 @@ final readonly class CommandDefinitionScanner
         }
 
         if ($node instanceof Node\Stmt\If_) {
-            $this->markConditional($node->stmts, $variable, $metadata);
+            $this->markConditional($node->stmts, $variable, $metadata, $depth + 1);
             foreach ($node->elseifs as $elseif) {
-                $this->markConditional($elseif->stmts, $variable, $metadata);
+                $this->markConditional($elseif->stmts, $variable, $metadata, $depth + 1);
             }
             if ($node->else !== null) {
-                $this->markConditional($node->else->stmts, $variable, $metadata);
+                $this->markConditional($node->else->stmts, $variable, $metadata, $depth + 1);
             }
 
             return;
         }
 
         if ($node instanceof Node\Stmt\Foreach_ || $node instanceof Node\Stmt\For_ || $node instanceof Node\Stmt\While_ || $node instanceof Node\Stmt\Do_) {
-            $this->markConditional($node->stmts, $variable, $metadata);
+            $this->markConditional($node->stmts, $variable, $metadata, $depth + 1);
 
             return;
         }
 
         if ($node instanceof Node\Stmt\TryCatch) {
-            $this->markConditional($node->stmts, $variable, $metadata);
+            $this->markConditional($node->stmts, $variable, $metadata, $depth + 1);
             foreach ($node->catches as $catch) {
-                $this->markConditional($catch->stmts, $variable, $metadata);
+                $this->markConditional($catch->stmts, $variable, $metadata, $depth + 1);
             }
             if ($node->finally !== null) {
-                $this->markConditional($node->finally->stmts, $variable, $metadata);
+                $this->markConditional($node->finally->stmts, $variable, $metadata, $depth + 1);
             }
         }
     }
@@ -318,7 +351,16 @@ final readonly class CommandDefinitionScanner
             return $default;
         }
 
-        return $expr instanceof Node\Scalar\String_ ? $expr->value : null;
+        return $expr instanceof Node\Scalar\String_ ? $this->boundedString($expr->value) : null;
+    }
+
+    private function boundedString(string $value): ?string
+    {
+        if (preg_match('//u', $value) !== 1 || strlen($value) > self::MAX_STRING_BYTES) {
+            return null;
+        }
+
+        return $value;
     }
 
     /** @param list<string> $values @return list<string> */
