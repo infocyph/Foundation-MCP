@@ -10,6 +10,8 @@ final class ProjectDetector
 {
     private const array CANONICAL_DIRECTORIES = ['app', 'bootstrap', 'config', 'routes'];
 
+    private const int JSON_DEPTH = 64;
+
     private const int MAX_COMPOSER_BYTES = 1_048_576;
 
     public function detect(string $root): Project
@@ -31,7 +33,12 @@ final class ProjectDetector
         }
 
         try {
-            $composer = json_decode($this->readComposer($composerPath), true, flags: JSON_THROW_ON_ERROR);
+            $composer = json_decode(
+                $this->readComposer($composerPath),
+                true,
+                self::JSON_DEPTH,
+                JSON_THROW_ON_ERROR,
+            );
         } catch (JsonException) {
             $evidence['composer_json_valid'] = false;
 
