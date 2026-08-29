@@ -6,6 +6,7 @@ namespace Infocyph\FoundationMcp\Analysis;
 
 use Infocyph\FoundationMcp\Analysis\Internal\PhpDeclarationVisitor;
 use Infocyph\FoundationMcp\Analysis\Internal\PhpLiteralVisitor;
+use Infocyph\FoundationMcp\Analysis\Internal\PhpNodeBudgetVisitor;
 use Infocyph\FoundationMcp\Analysis\Internal\PhpReferenceVisitor;
 use Infocyph\FoundationMcp\Composer\ComposerInspector;
 use Infocyph\FoundationMcp\Project\Project;
@@ -20,6 +21,8 @@ use RuntimeException;
 
 final class PhpAnalyzer
 {
+    private const int MAX_CACHE_BYTES = 32 * 1024 * 1024;
+
     private const int MAX_CACHE_ENTRIES = 256;
 
     private const int MAX_SOURCE_BYTES = 2_097_152;
@@ -32,6 +35,8 @@ final class PhpAnalyzer
 
     /** @var array<string, AnalyzedFile> */
     private array $cache = [];
+
+    private int $cacheBytes = 0;
 
     /** @var list<string> */
     private array $cacheOrder = [];
@@ -132,6 +137,7 @@ final class PhpAnalyzer
             'preserveOriginalNames' => true,
             'replaceNodes' => false,
         ]));
+        $traverser->addVisitor(new PhpNodeBudgetVisitor());
         $traverser->addVisitor($declarations);
         $traverser->addVisitor($references);
         $traverser->addVisitor($literals);
@@ -239,19 +245,43 @@ final class PhpAnalyzer
 
     private function remember(string $key, AnalyzedFile $file): AnalyzedFile
     {
-        if (!isset($this->cache[$key])) {
-            if (count($this->cacheOrder) >= self::MAX_CACHE_ENTRIES) {
-                $oldest = array_shift($this->cacheOrder);
+        $previous = $this->cache[$key] ?? null;
 
-                if (is_string($oldest)) {
-                    unset($this->cache[$oldest]);
-                }
+        if ($previous !== null) {
+            $this->cacheBytes -= $previous->bytes;
+            $position = array_search($key, $this->cacheOrder, true);
+
+            if (is_int($position)) {
+                unset($this->cacheOrder[$position]);
+                $this->cacheOrder = array_values($this->cacheOrder);
+            }
+        }
+
+        while (
+            $this->cacheOrder !== []
+            && (
+                count($this->cacheOrder) >= self::MAX_CACHE_ENTRIES
+                || ($this->cacheBytes + $file->bytes) > self::MAX_CACHE_BYTES
+            )
+        ) {
+            $oldest = array_shift($this->cacheOrder);
+
+            if (!is_string($oldest)) {
+                continue;
             }
 
-            $this->cacheOrder[] = $key;
+            $evicted = $this->cache[$oldest] ?? null;
+
+            if ($evicted !== null) {
+                $this->cacheBytes -= $evicted->bytes;
+            }
+
+            unset($this->cache[$oldest]);
         }
 
         $this->cache[$key] = $file;
+        $this->cacheOrder[] = $key;
+        $this->cacheBytes += $file->bytes;
 
         return $file;
     }
