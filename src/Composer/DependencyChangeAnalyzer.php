@@ -13,6 +13,8 @@ use RuntimeException;
 
 final readonly class DependencyChangeAnalyzer
 {
+    private const int JSON_DEPTH = 64;
+
     private const int MAX_JSON_BYTES = 33_554_432;
 
     private const int MAX_REFERENCES = 500;
@@ -148,7 +150,14 @@ final readonly class DependencyChangeAnalyzer
             $diagnostics[] = ['code' => 'module_catalog_unavailable', 'message' => $error->getMessage()];
         }
 
-        $projectReferences = $this->projectReferences($changed, $beforeLocked, $afterLocked);
+        $projectReferenceResult = $this->projectReferences($changed, $beforeLocked, $afterLocked);
+
+        if ($projectReferenceResult['truncated']) {
+            $diagnostics[] = [
+                'code' => 'project_references_truncated',
+                'message' => 'Project references reached the 500-result dependency-change limit; narrow the changed package set for exhaustive evidence.',
+            ];
+        }
 
         return [
             'changed' => $changed !== [],
@@ -163,7 +172,8 @@ final readonly class DependencyChangeAnalyzer
             'source_reference_changes' => $referenceChanges,
             'transitive' => ['added' => $transitiveAdded, 'removed' => $transitiveRemoved, 'changed' => $transitiveChanged],
             'affected_modules' => $modules,
-            'project_references' => $projectReferences,
+            'project_references' => $projectReferenceResult['items'],
+            'project_references_truncated' => $projectReferenceResult['truncated'],
             'diagnostics' => $diagnostics,
         ];
     }
@@ -176,7 +186,7 @@ final readonly class DependencyChangeAnalyzer
         }
 
         try {
-            $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+            $decoded = json_decode($json, true, self::JSON_DEPTH, JSON_THROW_ON_ERROR);
         } catch (JsonException $error) {
             throw new RuntimeException($label . ' is invalid JSON: ' . $error->getMessage(), 0, $error);
         }
@@ -233,6 +243,7 @@ final readonly class DependencyChangeAnalyzer
             'transitive' => ['added' => [], 'removed' => [], 'changed' => []],
             'affected_modules' => [],
             'project_references' => [],
+            'project_references_truncated' => false,
             'diagnostics' => $diagnostics,
         ];
     }
@@ -267,12 +278,12 @@ final readonly class DependencyChangeAnalyzer
      * @param list<string> $changed
      * @param array<string,array{version:?string,reference:?string,autoload:array<string,mixed>}> $before
      * @param array<string,array{version:?string,reference:?string,autoload:array<string,mixed>}> $after
-     * @return list<array{package:string,path:string,line:int,target:string,relationship:string,confidence:string}>
+     * @return array{items:list<array{package:string,path:string,line:int,target:string,relationship:string,confidence:string}>,truncated:bool}
      */
     private function projectReferences(array $changed, array $before, array $after): array
     {
         if ($changed === []) {
-            return [];
+            return ['items' => [], 'truncated' => false];
         }
         $prefixes = [];
         foreach ($changed as $package) {
@@ -300,6 +311,11 @@ final readonly class DependencyChangeAnalyzer
                 if (!array_any($packagePrefixes, static fn(string $prefix): bool => str_starts_with(ltrim($reference['target'], '\\'), ltrim($prefix, '\\')))) {
                     continue;
                 }
+
+                if (count($results) >= self::MAX_REFERENCES) {
+                    return ['items' => $results, 'truncated' => true];
+                }
+
                 $results[] = [
                     'package' => $package,
                     'path' => $reference['path'],
@@ -308,16 +324,13 @@ final readonly class DependencyChangeAnalyzer
                     'relationship' => $reference['relationship'],
                     'confidence' => $reference['confidence'],
                 ];
-                if (count($results) >= self::MAX_REFERENCES) {
-                    return $results;
-                }
 
                 break;
             }
         }
         usort($results, static fn(array $left, array $right): int => [$left['package'], $left['path'], $left['line'], $left['target']] <=> [$right['package'], $right['path'], $right['line'], $right['target']]);
 
-        return $results;
+        return ['items' => $results, 'truncated' => false];
     }
 
     /** @return array<string,mixed> */
@@ -327,18 +340,29 @@ final readonly class DependencyChangeAnalyzer
         if (!is_file($path)) {
             return [];
         }
-        $size = filesize($path);
-        if ($size === false || $size > self::MAX_JSON_BYTES) {
-            throw new RuntimeException('composer.lock exceeds the dependency-change inspection limit.');
+
+        $handle = fopen($path, 'rb');
+        if ($handle === false) {
+            throw new RuntimeException('Unable to read composer.lock.');
         }
-        $contents = file_get_contents($path);
+
+        try {
+            $contents = stream_get_contents($handle, self::MAX_JSON_BYTES + 1);
+        } finally {
+            fclose($handle);
+        }
+
         if (!is_string($contents)) {
             throw new RuntimeException('Unable to read composer.lock.');
+        }
+        if (strlen($contents) > self::MAX_JSON_BYTES) {
+            throw new RuntimeException('composer.lock exceeds the dependency-change inspection limit.');
         }
 
         return $this->decode($contents, 'composer.lock');
     }
 
+    /** @param array<string,mixed> $item */
     private function reference(array $item): ?string
     {
         foreach (['source', 'dist'] as $key) {
