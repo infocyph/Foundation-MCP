@@ -42,7 +42,15 @@ final class ModuleCatalogReader
 {
     private const string CONFIG_PATTERN = '~^[A-Za-z0-9_.-]+\.php$~D';
 
+    private const int MAX_ARRAY_ITEMS = 256;
+
+    private const int MAX_DEPTH = 8;
+
+    private const int MAX_MODULES = 128;
+
     private const int MAX_SOURCE_BYTES = 1_048_576;
+
+    private const int MAX_STRING_BYTES = 8_192;
 
     private const string MODULE_PATTERN = '~^[a-z][a-z0-9_-]*$~D';
 
@@ -248,16 +256,20 @@ final class ModuleCatalogReader
         return $path === $root || str_starts_with($path, $prefix);
     }
 
-    private function literal(Expr $expression): mixed
+    private function literal(Expr $expression, int $depth = 0): mixed
     {
+        if ($depth > self::MAX_DEPTH) {
+            throw new RuntimeException('Installed Foundation ModuleCatalog literal nesting limit exceeded.');
+        }
+
         return match (true) {
-            $expression instanceof Expr\Array_ => $this->literalArray($expression),
-            $expression instanceof Scalar\String_ => $expression->value,
+            $expression instanceof Expr\Array_ => $this->literalArray($expression, $depth + 1),
+            $expression instanceof Scalar\String_ => $this->string($expression->value),
             $expression instanceof Scalar\Int_ => $expression->value,
             $expression instanceof Scalar\Float_ => $expression->value,
             $expression instanceof Expr\ConstFetch => $this->literalConstant($expression),
-            $expression instanceof Expr\UnaryMinus => -$this->numericLiteral($expression->expr),
-            $expression instanceof Expr\UnaryPlus => $this->numericLiteral($expression->expr),
+            $expression instanceof Expr\UnaryMinus => -$this->numericLiteral($expression->expr, $depth + 1),
+            $expression instanceof Expr\UnaryPlus => $this->numericLiteral($expression->expr, $depth + 1),
             default => throw new RuntimeException(sprintf(
                 'Installed Foundation ModuleCatalog contains non-literal expression %s.',
                 $expression::class,
@@ -266,8 +278,12 @@ final class ModuleCatalogReader
     }
 
     /** @return array<array-key, mixed> */
-    private function literalArray(Expr\Array_ $array): array
+    private function literalArray(Expr\Array_ $array, int $depth): array
     {
+        if (count($array->items) > self::MAX_ARRAY_ITEMS) {
+            throw new RuntimeException('Installed Foundation ModuleCatalog array item limit exceeded.');
+        }
+
         $result = [];
 
         foreach ($array->items as $item) {
@@ -275,7 +291,7 @@ final class ModuleCatalogReader
                 throw new RuntimeException('Installed Foundation ModuleCatalog contains unsupported array syntax.');
             }
 
-            $value = $this->literal($item->value);
+            $value = $this->literal($item->value, $depth);
 
             if ($item->key === null) {
                 $result[] = $value;
@@ -283,7 +299,7 @@ final class ModuleCatalogReader
                 continue;
             }
 
-            $key = $this->literal($item->key);
+            $key = $this->literal($item->key, $depth);
 
             if (!is_int($key) && !is_string($key)) {
                 throw new RuntimeException('Installed Foundation ModuleCatalog contains a non-scalar array key.');
@@ -323,8 +339,8 @@ final class ModuleCatalogReader
     /** @return array<string, ModuleDefinition> */
     private function normalizeDefinitions(mixed $modules): array
     {
-        if (!is_array($modules)) {
-            throw new RuntimeException('Installed Foundation ModuleCatalog::MODULES must be a literal array.');
+        if (!is_array($modules) || count($modules) > self::MAX_MODULES) {
+            throw new RuntimeException('Installed Foundation ModuleCatalog::MODULES must be a bounded literal array.');
         }
 
         $normalized = [];
@@ -339,7 +355,7 @@ final class ModuleCatalogReader
             $description = $definition['description'] ?? null;
             $builtIn = $definition['built_in'] ?? false;
 
-            if (!is_string($description) || trim($description) === '' || !is_bool($builtIn)) {
+            if (!is_string($description) || trim($description) === '' || strlen($description) > self::MAX_STRING_BYTES || !is_bool($builtIn)) {
                 throw new RuntimeException(sprintf('Installed Foundation module "%s" has invalid metadata.', $name));
             }
 
@@ -371,12 +387,14 @@ final class ModuleCatalogReader
             }
         }
 
+        ksort($normalized, SORT_STRING);
+
         return $normalized;
     }
 
-    private function numericLiteral(Expr $expression): int|float
+    private function numericLiteral(Expr $expression, int $depth): int|float
     {
-        $value = $this->literal($expression);
+        $value = $this->literal($expression, $depth);
 
         if (!is_int($value) && !is_float($value)) {
             throw new RuntimeException('Installed Foundation ModuleCatalog contains a non-numeric unary expression.');
@@ -387,23 +405,39 @@ final class ModuleCatalogReader
 
     private function readSource(string $path): string
     {
-        $size = filesize($path);
+        $handle = fopen($path, 'rb');
 
-        if ($size !== false && $size > self::MAX_SOURCE_BYTES) {
-            throw new RuntimeException('Installed Foundation ModuleCatalog.php exceeds the 1 MiB safety limit.');
+        if ($handle === false) {
+            throw new RuntimeException('Unable to read installed Foundation ModuleCatalog.php.');
         }
 
-        $source = file_get_contents($path);
+        try {
+            $source = stream_get_contents($handle, self::MAX_SOURCE_BYTES + 1);
+        } finally {
+            fclose($handle);
+        }
 
-        if ($source === false) {
+        if (!is_string($source)) {
             throw new RuntimeException('Unable to read installed Foundation ModuleCatalog.php.');
         }
 
         if (strlen($source) > self::MAX_SOURCE_BYTES) {
             throw new RuntimeException('Installed Foundation ModuleCatalog.php exceeds the 1 MiB safety limit.');
         }
+        if (str_contains($source, "\0")) {
+            throw new RuntimeException('Installed Foundation ModuleCatalog.php is binary.');
+        }
 
         return $source;
+    }
+
+    private function string(string $value): string
+    {
+        if (strlen($value) > self::MAX_STRING_BYTES) {
+            throw new RuntimeException('Installed Foundation ModuleCatalog literal string limit exceeded.');
+        }
+
+        return $value;
     }
 
     /** @return list<string> */
@@ -413,8 +447,8 @@ final class ModuleCatalogReader
         ?string $pattern = null,
         bool $lowercase = false,
     ): array {
-        if (!is_array($value) || !array_is_list($value)) {
-            throw new RuntimeException(sprintf('Installed Foundation ModuleCatalog field "%s" must be a list.', $field));
+        if (!is_array($value) || !array_is_list($value) || count($value) > self::MAX_ARRAY_ITEMS) {
+            throw new RuntimeException(sprintf('Installed Foundation ModuleCatalog field "%s" must be a bounded list.', $field));
         }
 
         $result = [];
@@ -423,6 +457,7 @@ final class ModuleCatalogReader
             if (
                 !is_string($item)
                 || trim($item) === ''
+                || strlen($item) > self::MAX_STRING_BYTES
                 || ($pattern !== null && preg_match($pattern, $item) !== 1)
             ) {
                 throw new RuntimeException(sprintf('Installed Foundation ModuleCatalog field "%s" is invalid.', $field));
@@ -437,8 +472,8 @@ final class ModuleCatalogReader
     /** @return array<string, string> */
     private function stringMap(mixed $value, string $field, string $keyPattern): array
     {
-        if (!is_array($value)) {
-            throw new RuntimeException(sprintf('Installed Foundation ModuleCatalog field "%s" must be an array.', $field));
+        if (!is_array($value) || count($value) > self::MAX_ARRAY_ITEMS) {
+            throw new RuntimeException(sprintf('Installed Foundation ModuleCatalog field "%s" must be a bounded array.', $field));
         }
 
         $result = [];
@@ -449,6 +484,7 @@ final class ModuleCatalogReader
                 || preg_match($keyPattern, $key) !== 1
                 || !is_string($item)
                 || trim($item) === ''
+                || strlen($item) > self::MAX_STRING_BYTES
             ) {
                 throw new RuntimeException(sprintf('Installed Foundation ModuleCatalog field "%s" is invalid.', $field));
             }
