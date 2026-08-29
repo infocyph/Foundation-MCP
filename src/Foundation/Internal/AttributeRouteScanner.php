@@ -12,12 +12,16 @@ use PhpParser\Node;
  *   options:array<string,mixed>,origin:string,source:string,line:int,status:string,conditional:bool,dynamic_fields:list<string>
  * }
  */
-final readonly class AttributeRouteScanner
+final class AttributeRouteScanner
 {
+    private const int MAX_ROUTES = 2_000;
+
+    private bool $truncated = false;
+
     /** @param array<string,true> $verbs */
     public function __construct(
-        private RouteValueResolver $values,
-        private array $verbs,
+        private readonly RouteValueResolver $values,
+        private readonly array $verbs,
     ) {}
 
     /**
@@ -26,10 +30,16 @@ final readonly class AttributeRouteScanner
      */
     public function scan(array $nodes, string $source, bool $conditional): array
     {
+        $this->truncated = false;
         $routes = [];
         $this->scanNodes($nodes, $source, $conditional, $routes);
 
         return $routes;
+    }
+
+    public function truncated(): bool
+    {
+        return $this->truncated;
     }
 
     /**
@@ -146,6 +156,11 @@ final readonly class AttributeRouteScanner
     ): array {
         $routes = [];
         foreach ($methods as $verb) {
+            if (count($routes) >= self::MAX_ROUTES) {
+                $this->truncated = true;
+
+                break;
+            }
             $method = strtoupper($verb);
             $methodDynamic = $dynamic;
             if ($method !== 'DYNAMIC' && !isset($this->verbs[strtolower($method)])) {
@@ -238,6 +253,13 @@ final readonly class AttributeRouteScanner
                     continue;
                 }
                 array_push($middleware, ...$resolved);
+                if (count($middleware) > self::MAX_ROUTES) {
+                    $middleware = array_slice($middleware, 0, self::MAX_ROUTES);
+                    $dynamic = true;
+                    $this->truncated = true;
+
+                    break 2;
+                }
             }
         }
 
@@ -259,6 +281,11 @@ final readonly class AttributeRouteScanner
         foreach ($groups as $group) {
             foreach ($group->attrs as $attribute) {
                 if ($this->values->attributeName($attribute) === 'Infocyph\\Webrick\\Router\\Definition\\Attribute\\Route') {
+                    if (count($routes) >= self::MAX_ROUTES) {
+                        $this->truncated = true;
+
+                        return $routes;
+                    }
                     $routes[] = $attribute;
                 }
             }
@@ -286,7 +313,7 @@ final readonly class AttributeRouteScanner
             [$methodMiddleware, $methodMiddlewareDynamic] = $this->middlewareAttributes($method->attrGroups);
             $methodDynamic = $methodMiddlewareDynamic ? [...$classDynamic, 'middleware'] : $classDynamic;
             foreach ($this->routeAttributes($method->attrGroups) as $attribute) {
-                array_push($routes, ...$this->attributeRoutes(
+                $expanded = $this->attributeRoutes(
                     $attribute,
                     $className,
                     $method->name->toString(),
@@ -297,7 +324,18 @@ final readonly class AttributeRouteScanner
                     $methodDynamic,
                     $conditional,
                     $source,
-                ));
+                );
+                $remaining = self::MAX_ROUTES - count($routes);
+                if (count($expanded) > $remaining) {
+                    array_push($routes, ...array_slice($expanded, 0, $remaining));
+                    $this->truncated = true;
+
+                    return $routes;
+                }
+                array_push($routes, ...$expanded);
+                if (count($routes) >= self::MAX_ROUTES) {
+                    return $routes;
+                }
             }
         }
 
@@ -311,6 +349,11 @@ final readonly class AttributeRouteScanner
     private function scanNodes(array $nodes, string $source, bool $conditional, array &$routes): void
     {
         foreach ($nodes as $node) {
+            if (count($routes) >= self::MAX_ROUTES) {
+                $this->truncated = true;
+
+                return;
+            }
             if ($node instanceof Node\Stmt\Namespace_) {
                 $this->scanNodes($node->stmts, $source, $conditional, $routes);
 
@@ -320,7 +363,15 @@ final readonly class AttributeRouteScanner
                 continue;
             }
 
-            array_push($routes, ...$this->scanClass($node, $source, $conditional));
+            $expanded = $this->scanClass($node, $source, $conditional);
+            $remaining = self::MAX_ROUTES - count($routes);
+            if (count($expanded) > $remaining) {
+                array_push($routes, ...array_slice($expanded, 0, $remaining));
+                $this->truncated = true;
+
+                return;
+            }
+            array_push($routes, ...$expanded);
         }
     }
 }
