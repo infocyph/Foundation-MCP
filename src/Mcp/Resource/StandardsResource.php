@@ -66,14 +66,27 @@ final readonly class StandardsResource
     private function source(string $owner, string $path, array $read): array
     {
         $original = (string) ($read['content'] ?? '');
-        $excerpt = strlen($original) > self::MAX_EXCERPT_BYTES ? substr($original, 0, self::MAX_EXCERPT_BYTES) . '…' : $original;
+        $excerptTruncated = strlen($original) > self::MAX_EXCERPT_BYTES;
+        $excerpt = $excerptTruncated
+            ? $this->truncateUtf8($original, self::MAX_EXCERPT_BYTES) . '…'
+            : $original;
 
         return [
             'owner' => $owner,
             'path' => $path,
             'kind' => in_array($path, self::DOCUMENTS, true) ? 'documentation' : 'configuration',
             'excerpt' => $excerpt,
-            'truncated' => (bool) ($read['truncated'] ?? false) || strlen($original) > self::MAX_EXCERPT_BYTES,
+            'truncated' => (bool) ($read['truncated'] ?? false) || $excerptTruncated,
         ];
+    }
+
+    private function truncateUtf8(string $value, int $bytes): string
+    {
+        $value = substr($value, 0, $bytes);
+        while ($value !== '' && preg_match('//u', $value) !== 1) {
+            $value = substr($value, 0, -1);
+        }
+
+        return $value;
     }
 }
