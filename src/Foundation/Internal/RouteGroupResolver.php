@@ -12,21 +12,40 @@ use PhpParser\Node;
  */
 final readonly class RouteGroupResolver
 {
+    private const int MAX_CONTEXT_ITEMS = 256;
+
+    private const int MAX_STRING_BYTES = 8_192;
+
     public function __construct(private RouteValueResolver $values) {}
 
     /** @param Scope $parent @param Group $group @return Scope */
     public function child(array $parent, array $group): array
     {
+        $dynamic = [...$parent['dynamic'], ...$group['dynamic']];
+        $namePrefix = $this->combineStrings($parent['name_prefix'], $group['name_prefix']);
+        if ($parent['name_prefix'] !== null && $group['name_prefix'] !== null && $namePrefix === null) {
+            $dynamic[] = 'name_prefix';
+        }
+
+        $middleware = array_values(array_unique([...$parent['middleware'], ...$group['middleware']]));
+        if (count($middleware) > self::MAX_CONTEXT_ITEMS) {
+            $middleware = [];
+            $dynamic[] = 'middleware';
+        }
+
+        $dynamic = array_values(array_unique($dynamic));
+        if (count($dynamic) > self::MAX_CONTEXT_ITEMS) {
+            $dynamic = ['group_context'];
+        }
+
         return [
             'prefix' => $group['prefix'] === null || $parent['prefix'] === null
                 ? null
                 : $this->values->joinPath($parent['prefix'], $group['prefix']),
-            'name_prefix' => $group['name_prefix'] === null || $parent['name_prefix'] === null
-                ? null
-                : $parent['name_prefix'] . $group['name_prefix'],
-            'middleware' => [...$parent['middleware'], ...$group['middleware']],
+            'name_prefix' => $namePrefix,
+            'middleware' => $middleware,
             'domain' => $group['domain'] ?? $parent['domain'],
-            'dynamic' => [...$parent['dynamic'], ...$group['dynamic']],
+            'dynamic' => $dynamic,
         ];
     }
 
@@ -128,6 +147,17 @@ final readonly class RouteGroupResolver
             'callback' => $callback,
             'dynamic' => [],
         ];
+    }
+
+    private function combineStrings(?string $left, ?string $right): ?string
+    {
+        if ($left === null || $right === null) {
+            return null;
+        }
+
+        $value = $left . $right;
+
+        return strlen($value) <= self::MAX_STRING_BYTES ? $value : null;
     }
 
     /** @param array<int|string,Node\Arg> $args */
