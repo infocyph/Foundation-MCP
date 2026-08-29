@@ -6,6 +6,10 @@ namespace Infocyph\FoundationMcp\Mcp\Tool;
 
 final readonly class SymbolTool
 {
+    private const int MAX_CANDIDATES = 20;
+
+    private const int MAX_DIAGNOSTICS = 50;
+
     public const string DESCRIPTION = 'Resolve a PHP symbol to its exact declaration, signature, source, ownership, and structural relationships in the project or one explicit installed package.';
 
     public const array INPUT_SCHEMA = [
@@ -28,7 +32,9 @@ final readonly class SymbolTool
     public function execute(string $symbol, ?string $package = null): array
     {
         $matches = $this->services->symbols()->find($symbol, $package);
-        $diagnostics = array_slice($this->services->symbols()->diagnostics($package), 0, 50);
+        $allDiagnostics = $this->services->symbols()->diagnostics($package);
+        $diagnostics = array_slice($allDiagnostics, 0, self::MAX_DIAGNOSTICS);
+        $diagnosticsTruncated = count($allDiagnostics) > self::MAX_DIAGNOSTICS;
 
         if ($matches === []) {
             return [
@@ -37,7 +43,9 @@ final readonly class SymbolTool
                 'package' => $package,
                 'declaration' => null,
                 'candidates' => [],
+                'candidates_truncated' => false,
                 'diagnostics' => $diagnostics,
+                'diagnostics_truncated' => $diagnosticsTruncated,
             ];
         }
 
@@ -47,8 +55,10 @@ final readonly class SymbolTool
                 'query' => $symbol,
                 'package' => $package,
                 'declaration' => null,
-                'candidates' => array_slice($matches, 0, 20),
+                'candidates' => array_slice($matches, 0, self::MAX_CANDIDATES),
+                'candidates_truncated' => count($matches) > self::MAX_CANDIDATES,
                 'diagnostics' => $diagnostics,
+                'diagnostics_truncated' => $diagnosticsTruncated,
             ];
         }
 
@@ -66,7 +76,9 @@ final readonly class SymbolTool
                 'attributes' => $declaration['attributes'],
             ],
             'candidates' => [],
+            'candidates_truncated' => false,
             'diagnostics' => $diagnostics,
+            'diagnostics_truncated' => $diagnosticsTruncated,
         ];
     }
 }
