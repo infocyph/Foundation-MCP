@@ -32,7 +32,13 @@ final readonly class SearchEngine
 
     private const int MAX_EXCERPT_BYTES = 240;
 
+    private const int MAX_QUERY_BYTES = 512;
+
     private const int MAX_RESULTS = 100;
+
+    private const int MAX_SCAN_DIRECTORIES = 10_000;
+
+    private const int MAX_SCAN_ENTRIES = 100_000;
 
     private const int MAX_SCAN_FILES = 2_500;
 
@@ -97,6 +103,10 @@ final readonly class SearchEngine
 
         if ($query === '') {
             throw new InvalidArgumentException('Search query must not be empty.');
+        }
+
+        if (strlen($query) > self::MAX_QUERY_BYTES || preg_match('//u', $query) !== 1) {
+            throw new InvalidArgumentException('Search query must be valid UTF-8 and no more than 512 bytes.');
         }
 
         if (!in_array($scope, self::SCOPES, true)) {
@@ -185,10 +195,16 @@ final readonly class SearchEngine
     private function excerpt(string $value): string
     {
         if (strlen($value) <= self::MAX_EXCERPT_BYTES) {
-            return $value;
+            return preg_match('//u', $value) === 1 ? $value : '[invalid UTF-8 excerpt]';
         }
 
-        return substr($value, 0, self::MAX_EXCERPT_BYTES - 3) . '...';
+        $excerpt = substr($value, 0, self::MAX_EXCERPT_BYTES - 3);
+
+        while ($excerpt !== '' && preg_match('//u', $excerpt) !== 1) {
+            $excerpt = substr($excerpt, 0, -1);
+        }
+
+        return $excerpt . '...';
     }
 
     private function excluded(string $path, bool $project): bool
@@ -212,6 +228,19 @@ final readonly class SearchEngine
         }
 
         return $project && ($normalized === 'vendor' || str_starts_with($normalized, 'vendor/'));
+    }
+
+    /** @return resource|false */
+    private function openDirectory(string $directory)
+    {
+        // Optional/unreadable search roots are treated as absent; warnings must not corrupt the MCP protocol stream.
+        set_error_handler(static fn(int $severity): bool => $severity === E_WARNING, E_WARNING);
+
+        try {
+            return opendir($directory);
+        } finally {
+            restore_error_handler();
+        }
     }
 
     /** @return SearchTarget */
@@ -298,6 +327,35 @@ final readonly class SearchEngine
         ];
     }
 
+    private function readTextFile(string $path, string $relative): ?string
+    {
+        $handle = fopen($path, 'rb');
+
+        if ($handle === false) {
+            return null;
+        }
+
+        try {
+            $content = stream_get_contents($handle, self::MAX_TEXT_FILE_BYTES + 1);
+        } finally {
+            fclose($handle);
+        }
+
+        if (!is_string($content)) {
+            return null;
+        }
+
+        if (strlen($content) > self::MAX_TEXT_FILE_BYTES) {
+            throw new RuntimeException(sprintf('Search candidate "%s" exceeds the 512 KiB per-file text limit. Narrow the search scope or read the file directly.', $relative));
+        }
+
+        if (str_contains($content, "\0") || preg_match('//u', $content) !== 1) {
+            return null;
+        }
+
+        return $content;
+    }
+
     private function relative(string $path, string $root): ?string
     {
         $path = str_replace('\\', '/', rtrim($path, '/\\'));
@@ -328,54 +386,68 @@ final readonly class SearchEngine
     {
         $files = [];
         $stack = [$target['root']];
+        $directories = 0;
+        $entries = 0;
 
         while (($directory = array_pop($stack)) !== null) {
-            $entries = scandir($directory);
+            if (++$directories > self::MAX_SCAN_DIRECTORIES) {
+                throw new RuntimeException('Search traversal exceeds the 10,000 directory limit. Narrow the search scope.');
+            }
 
-            if ($entries === false) {
+            $handle = $this->openDirectory($directory);
+
+            if ($handle === false) {
                 continue;
             }
 
-            foreach ($entries as $entry) {
-                if ($entry === '.' || $entry === '..') {
-                    continue;
-                }
-
-                $absolute = $directory . DIRECTORY_SEPARATOR . $entry;
-
-                if (is_link($absolute)) {
-                    continue;
-                }
-
-                $path = $this->relative($absolute, $target['root']);
-
-                if ($path === null || $this->excluded($path, $target['package'] === null)) {
-                    continue;
-                }
-
-                if (!$this->pathInTarget($path, $target)) {
-                    if (is_dir($absolute) && $this->couldContainPrefix($path, $target['prefix'])) {
-                        $stack[] = $absolute;
+            try {
+                while (($entry = readdir($handle)) !== false) {
+                    if ($entry === '.' || $entry === '..') {
+                        continue;
                     }
 
-                    continue;
+                    if (++$entries > self::MAX_SCAN_ENTRIES) {
+                        throw new RuntimeException('Search traversal exceeds the 100,000 filesystem entry limit. Narrow the search scope.');
+                    }
+
+                    $absolute = $directory . DIRECTORY_SEPARATOR . $entry;
+
+                    if (is_link($absolute)) {
+                        continue;
+                    }
+
+                    $path = $this->relative($absolute, $target['root']);
+
+                    if ($path === null || $this->excluded($path, $target['package'] === null)) {
+                        continue;
+                    }
+
+                    if (!$this->pathInTarget($path, $target)) {
+                        if (is_dir($absolute) && $this->couldContainPrefix($path, $target['prefix'])) {
+                            $stack[] = $absolute;
+                        }
+
+                        continue;
+                    }
+
+                    if (is_dir($absolute)) {
+                        $stack[] = $absolute;
+
+                        continue;
+                    }
+
+                    if (!is_file($absolute) || $this->secrets->denied($path)) {
+                        continue;
+                    }
+
+                    if (count($files) >= self::MAX_SCAN_FILES) {
+                        throw new RuntimeException('Search scope exceeds the 2,500 file limit. Narrow the search scope.');
+                    }
+
+                    $files[$path] = $absolute;
                 }
-
-                if (is_dir($absolute)) {
-                    $stack[] = $absolute;
-
-                    continue;
-                }
-
-                if (!is_file($absolute) || $this->secrets->denied($path)) {
-                    continue;
-                }
-
-                $files[$path] = $absolute;
-
-                if (count($files) >= self::MAX_SCAN_FILES) {
-                    break 2;
-                }
+            } finally {
+                closedir($handle);
             }
         }
 
@@ -513,28 +585,19 @@ final readonly class SearchEngine
                 continue;
             }
 
-            $size = filesize($absolute);
+            $content = $this->readTextFile($absolute, $path);
 
-            if ($size === false || $size > self::MAX_TEXT_FILE_BYTES) {
+            if ($content === null) {
                 continue;
             }
 
-            if (($scanned + $size) > self::MAX_TEXT_SCAN_BYTES) {
-                break;
+            $bytes = strlen($content);
+
+            if (($scanned + $bytes) > self::MAX_TEXT_SCAN_BYTES) {
+                throw new RuntimeException('Search text scan exceeds the 16 MiB content limit. Narrow the search scope.');
             }
 
-            $scanned += $size;
-            $content = file_get_contents($absolute);
-
-            if (
-                $content === false
-                || strlen($content) > self::MAX_TEXT_FILE_BYTES
-                || str_contains($content, "\0")
-                || preg_match('//u', $content) !== 1
-            ) {
-                continue;
-            }
-
+            $scanned += $bytes;
             $lines = explode("\n", str_replace(["\r\n", "\r"], "\n", $content));
 
             foreach ($lines as $index => $line) {
