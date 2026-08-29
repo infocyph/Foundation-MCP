@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Infocyph\FoundationMcp\Foundation;
 
+use Infocyph\FoundationMcp\Analysis\Internal\PhpNodeBudgetVisitor;
 use Infocyph\FoundationMcp\Composer\ComposerInspector;
 use Infocyph\FoundationMcp\Foundation\Internal\InstalledScheduleContract;
 use Infocyph\FoundationMcp\Foundation\Internal\RouteValueResolver;
@@ -28,9 +29,13 @@ use RuntimeException;
  */
 final class ScheduleInspector
 {
+    private const int MAX_CHAIN_LENGTH = 128;
+
     private const int MAX_DIAGNOSTICS = 100;
 
     private const int MAX_ENTRIES = 500;
+
+    private const int MAX_RECURSION_DEPTH = 64;
 
     private const int MAX_SOURCE_BYTES = 1_048_576;
 
@@ -73,7 +78,19 @@ final class ScheduleInspector
         $this->entryVariables = [];
 
         $contract = new InstalledScheduleContract($this->project, $this->composer, $this->parser)->read();
-        $this->diagnostics = $contract['diagnostics'];
+        $contractDiagnostics = $contract['diagnostics'];
+        if (count($contractDiagnostics) >= self::MAX_DIAGNOSTICS) {
+            $contractDiagnostics = [
+                ...array_slice($contractDiagnostics, 0, self::MAX_DIAGNOSTICS - 1),
+                [
+                    'code' => 'diagnostic_limit_exceeded',
+                    'source' => null,
+                    'line' => null,
+                    'message' => sprintf('Schedule diagnostics are limited to %d entries.', self::MAX_DIAGNOSTICS),
+                ],
+            ];
+        }
+        $this->diagnostics = $contractDiagnostics;
         $this->fluent = $contract['fluent_methods'];
         $routeFile = $contract['route_file'];
         if ($routeFile === null) {
@@ -184,12 +201,22 @@ final class ScheduleInspector
         return $this->values->arg($this->values->callArgs($call), $position, $name);
     }
 
-    /** @return array{0:Node\Expr,1:list<Node\Expr\MethodCall>} */
-    private function chain(Node\Expr\MethodCall $expr): array
+    /** @return array{0:Node\Expr,1:list<Node\Expr\MethodCall>}|null */
+    private function chain(Node\Expr\MethodCall $expr, string $source): ?array
     {
         $calls = [];
         $base = $expr;
         while ($base instanceof Node\Expr\MethodCall) {
+            if (count($calls) >= self::MAX_CHAIN_LENGTH) {
+                $this->diagnosticOnce(
+                    'inspection_limit_exceeded',
+                    $source,
+                    $base->getStartLine(),
+                    sprintf('Schedule fluent chains are limited to %d calls.', self::MAX_CHAIN_LENGTH),
+                );
+
+                return null;
+            }
             array_unshift($calls, $base);
             $base = $base->var;
         }
@@ -214,14 +241,38 @@ final class ScheduleInspector
 
     private function diagnostic(string $code, ?string $source, ?int $line, string $message): void
     {
-        if (count($this->diagnostics) < self::MAX_DIAGNOSTICS) {
-            $this->diagnostics[] = [
-                'code' => $code,
-                'source' => $source,
-                'line' => $line,
-                'message' => $message,
-            ];
+        $count = count($this->diagnostics);
+        if ($count >= self::MAX_DIAGNOSTICS) {
+            return;
         }
+        if ($count === self::MAX_DIAGNOSTICS - 1 && $code !== 'diagnostic_limit_exceeded') {
+            $this->diagnostics[] = [
+                'code' => 'diagnostic_limit_exceeded',
+                'source' => null,
+                'line' => null,
+                'message' => sprintf('Schedule diagnostics are limited to %d entries.', self::MAX_DIAGNOSTICS),
+            ];
+
+            return;
+        }
+
+        $this->diagnostics[] = [
+            'code' => $code,
+            'source' => $source,
+            'line' => $line,
+            'message' => $message,
+        ];
+    }
+
+    private function diagnosticOnce(string $code, ?string $source, ?int $line, string $message): void
+    {
+        foreach ($this->diagnostics as $diagnostic) {
+            if ($diagnostic['code'] === $code && $diagnostic['source'] === $source) {
+                return;
+            }
+        }
+
+        $this->diagnostic($code, $source, $line, $message);
     }
 
     /** @param array<string,true> $scheduleVariables */
@@ -230,7 +281,11 @@ final class ScheduleInspector
         if (!$expr instanceof Node\Expr\MethodCall) {
             return null;
         }
-        [$base, $calls] = $this->chain($expr);
+        $chain = $this->chain($expr, $source);
+        if ($chain === null) {
+            return null;
+        }
+        [$base, $calls] = $chain;
         if ($base instanceof Node\Expr\Variable && is_string($base->name) && isset($scheduleVariables[$base->name])) {
             $first = $calls[0] ?? null;
             if (!$first instanceof Node\Expr\MethodCall || !$first->name instanceof Node\Identifier) {
@@ -308,6 +363,16 @@ final class ScheduleInspector
     {
         $calls = [];
         while ($expr instanceof Node\Expr\MethodCall) {
+            if (count($calls) >= self::MAX_CHAIN_LENGTH) {
+                $this->diagnosticOnce(
+                    'inspection_limit_exceeded',
+                    $source,
+                    $expr->getStartLine(),
+                    sprintf('ScheduledCommand fluent chains are limited to %d calls.', self::MAX_CHAIN_LENGTH),
+                );
+
+                return null;
+            }
             array_unshift($calls, $expr);
             $expr = $expr->var;
         }
@@ -416,15 +481,9 @@ final class ScheduleInspector
     /** @return list<Node\Stmt>|null */
     private function parse(string $path, string $source): ?array
     {
-        $size = filesize($path);
-        if ($size === false || $size > self::MAX_SOURCE_BYTES) {
-            $this->diagnostic('source_too_large', $source, null, sprintf('Schedule source exceeds %d bytes.', self::MAX_SOURCE_BYTES));
-
-            return null;
-        }
-        $contents = file_get_contents($path);
-        if (!is_string($contents) || str_contains($contents, "\0")) {
-            $this->diagnostic('source_unreadable', $source, null, 'Schedule source is unreadable or binary.');
+        $contents = $this->read($path);
+        if ($contents === null) {
+            $this->diagnostic('source_unreadable', $source, null, sprintf('Schedule source is unreadable, binary, invalid UTF-8, or exceeds %d bytes.', self::MAX_SOURCE_BYTES));
 
             return null;
         }
@@ -432,14 +491,51 @@ final class ScheduleInspector
         try {
             $nodes = $this->parser->parse($contents) ?? [];
         } catch (Error $error) {
-            $this->diagnostic('parse_error', $source, $error->getStartLine(), $error->getMessage());
+            $this->diagnostic('parse_error', $source, $error->getStartLine(), $error->getRawMessage());
 
             return null;
         }
         $traverser = new NodeTraverser();
+        $traverser->addVisitor(new PhpNodeBudgetVisitor());
         $traverser->addVisitor(new NameResolver(null, ['preserveOriginalNames' => true, 'replaceNodes' => false]));
 
-        return $traverser->traverse($nodes);
+        try {
+            /** @var list<Node\Stmt> $resolved */
+            $resolved = $traverser->traverse($nodes);
+
+            return $resolved;
+        } catch (Error $error) {
+            $this->diagnostic('parse_error', $source, $error->getStartLine(), $error->getRawMessage());
+        } catch (RuntimeException $error) {
+            $this->diagnostic('inspection_limit_exceeded', $source, null, $error->getMessage());
+        }
+
+        return null;
+    }
+
+    private function read(string $path): ?string
+    {
+        $handle = fopen($path, 'rb');
+        if ($handle === false) {
+            return null;
+        }
+
+        try {
+            $contents = stream_get_contents($handle, self::MAX_SOURCE_BYTES + 1);
+        } finally {
+            fclose($handle);
+        }
+
+        if (
+            !is_string($contents)
+            || strlen($contents) > self::MAX_SOURCE_BYTES
+            || str_contains($contents, "\0")
+            || preg_match('//u', $contents) !== 1
+        ) {
+            return null;
+        }
+
+        return $contents;
     }
 
     /** @param list<Node\Stmt> $nodes */
@@ -491,8 +587,19 @@ final class ScheduleInspector
     }
 
     /** @param list<Node\Stmt> $statements @param array<string,true> $scheduleVariables */
-    private function scanStatements(array $statements, array $scheduleVariables, bool $conditional, string $source): void
+    private function scanStatements(array $statements, array $scheduleVariables, bool $conditional, string $source, int $depth = 0): void
     {
+        if ($depth >= self::MAX_RECURSION_DEPTH) {
+            $this->diagnosticOnce(
+                'inspection_limit_exceeded',
+                $source,
+                null,
+                sprintf('Schedule statement traversal exceeds %d levels.', self::MAX_RECURSION_DEPTH),
+            );
+
+            return;
+        }
+
         foreach ($statements as $statement) {
             if (count($this->entries) >= self::MAX_ENTRIES) {
                 $this->limitDiagnostic();
@@ -505,28 +612,28 @@ final class ScheduleInspector
                 continue;
             }
             if ($statement instanceof Node\Stmt\If_) {
-                $this->scanStatements($statement->stmts, $scheduleVariables, true, $source);
+                $this->scanStatements($statement->stmts, $scheduleVariables, true, $source, $depth + 1);
                 foreach ($statement->elseifs as $elseif) {
-                    $this->scanStatements($elseif->stmts, $scheduleVariables, true, $source);
+                    $this->scanStatements($elseif->stmts, $scheduleVariables, true, $source, $depth + 1);
                 }
                 if ($statement->else !== null) {
-                    $this->scanStatements($statement->else->stmts, $scheduleVariables, true, $source);
+                    $this->scanStatements($statement->else->stmts, $scheduleVariables, true, $source, $depth + 1);
                 }
 
                 continue;
             }
             if ($statement instanceof Node\Stmt\Foreach_ || $statement instanceof Node\Stmt\For_ || $statement instanceof Node\Stmt\While_ || $statement instanceof Node\Stmt\Do_) {
-                $this->scanStatements($statement->stmts, $scheduleVariables, true, $source);
+                $this->scanStatements($statement->stmts, $scheduleVariables, true, $source, $depth + 1);
 
                 continue;
             }
             if ($statement instanceof Node\Stmt\TryCatch) {
-                $this->scanStatements($statement->stmts, $scheduleVariables, true, $source);
+                $this->scanStatements($statement->stmts, $scheduleVariables, true, $source, $depth + 1);
                 foreach ($statement->catches as $catch) {
-                    $this->scanStatements($catch->stmts, $scheduleVariables, true, $source);
+                    $this->scanStatements($catch->stmts, $scheduleVariables, true, $source, $depth + 1);
                 }
                 if ($statement->finally !== null) {
-                    $this->scanStatements($statement->finally->stmts, $scheduleVariables, true, $source);
+                    $this->scanStatements($statement->finally->stmts, $scheduleVariables, true, $source, $depth + 1);
                 }
             }
         }
