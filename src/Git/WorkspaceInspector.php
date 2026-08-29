@@ -17,6 +17,8 @@ use RuntimeException;
  */
 final readonly class WorkspaceInspector
 {
+    private const int MAX_DIAGNOSTICS = 50;
+
     private const int MAX_FILES = 500;
 
     private const int MAX_PHP_FILES = 200;
@@ -60,11 +62,16 @@ final readonly class WorkspaceInspector
             return $this->emptyResult([['code' => 'git_unavailable', 'message' => $error->getMessage()]]);
         }
 
-        $files = $this->parseStatus($status['stdout']);
+        $statusResult = $this->parseStatus($status['stdout']);
+        $files = $statusResult['files'];
         $diagnostics = [];
-        if (count($files) > self::MAX_FILES) {
-            $files = array_slice($files, 0, self::MAX_FILES);
-            $diagnostics[] = ['code' => 'output_limit_exceeded', 'message' => sprintf('Git workspace inspection is limited to %d changed files.', self::MAX_FILES)];
+
+        if ($statusResult['truncated']) {
+            $this->diagnostic(
+                $diagnostics,
+                'output_limit_exceeded',
+                sprintf('Git workspace inspection is limited to %d changed files.', self::MAX_FILES),
+            );
         }
 
         $headResult = $this->git->head();
@@ -76,13 +83,18 @@ final readonly class WorkspaceInspector
         $phpChanges = [];
         $changedSymbols = [];
         $affectedTests = [];
+        $affectedTestsTruncated = false;
         $phpCount = 0;
         foreach ($files as $file) {
             if (strtolower(pathinfo($file['path'], PATHINFO_EXTENSION)) !== 'php') {
                 continue;
             }
             if (++$phpCount > self::MAX_PHP_FILES) {
-                $diagnostics[] = ['code' => 'output_limit_exceeded', 'message' => sprintf('PHP change analysis is limited to %d changed PHP files.', self::MAX_PHP_FILES)];
+                $this->diagnostic(
+                    $diagnostics,
+                    'output_limit_exceeded',
+                    sprintf('PHP change analysis is limited to %d changed PHP files.', self::MAX_PHP_FILES),
+                );
 
                 break;
             }
@@ -91,18 +103,44 @@ final readonly class WorkspaceInspector
             foreach ([...$delta['declarations']['added'], ...$delta['declarations']['removed'], ...$delta['declarations']['modified']] as $symbol) {
                 $changedSymbols[$symbol] = true;
             }
-            if ($file['change'] !== 'deleted' && is_file($this->project->root . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $file['path']))) {
-                try {
-                    foreach ($this->tests->forFile($file['path'], 20) as $test) {
-                        $affectedTests[$test['path']] = true;
-                        if (count($affectedTests) >= self::MAX_TESTS) {
-                            break;
-                        }
-                    }
-                } catch (RuntimeException) {
-                    // Broken/ambiguous changed source must not break Git summary.
-                }
+
+            if (
+                $affectedTestsTruncated
+                || $file['change'] === 'deleted'
+                || !is_file($this->project->root . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $file['path']))
+            ) {
+                continue;
             }
+
+            try {
+                foreach ($this->tests->forFile($file['path'], 20) as $test) {
+                    if (isset($affectedTests[$test['path']])) {
+                        continue;
+                    }
+
+                    if (count($affectedTests) >= self::MAX_TESTS) {
+                        $affectedTestsTruncated = true;
+
+                        break;
+                    }
+
+                    $affectedTests[$test['path']] = true;
+                }
+            } catch (RuntimeException $error) {
+                $this->diagnostic(
+                    $diagnostics,
+                    'related_test_discovery_failed',
+                    $file['path'] . ': ' . $error->getMessage(),
+                );
+            }
+        }
+
+        if ($affectedTestsTruncated) {
+            $this->diagnostic(
+                $diagnostics,
+                'affected_tests_truncated',
+                sprintf('Affected test discovery is limited to %d unique test paths.', self::MAX_TESTS),
+            );
         }
 
         $symbols = array_keys($changedSymbols);
@@ -219,7 +257,7 @@ final readonly class WorkspaceInspector
         }
         unset($items);
 
-        return compact('added', 'removed', 'modified');
+        return ['added' => $added, 'removed' => $removed, 'modified' => $modified];
     }
 
     /** @param list<array<string,mixed>> $items @return array<string,array{symbol:string,fingerprint:string}> */
@@ -238,6 +276,20 @@ final readonly class WorkspaceInspector
         }
 
         return $map;
+    }
+
+    /** @param array<int,array{code:string,message:string}> $diagnostics */
+    private function diagnostic(array &$diagnostics, string $code, string $message): void
+    {
+        if (count($diagnostics) >= self::MAX_DIAGNOSTICS) {
+            return;
+        }
+
+        $entry = ['code' => $code, 'message' => $message];
+
+        if (!in_array($entry, $diagnostics, true)) {
+            $diagnostics[] = $entry;
+        }
     }
 
     /** @param list<array{code:string,message:string}> $diagnostics */
@@ -259,11 +311,11 @@ final readonly class WorkspaceInspector
         ];
     }
 
-    /** @return list<FileChange> */
+    /** @return array{files:list<FileChange>,truncated:bool} */
     private function parseStatus(string $status): array
     {
         if ($status === '') {
-            return [];
+            return ['files' => [], 'truncated' => false];
         }
         $parts = explode("\0", $status);
         $files = [];
@@ -282,6 +334,11 @@ final readonly class WorkspaceInspector
             if (in_array($x, ['R', 'C'], true) || in_array($y, ['R', 'C'], true)) {
                 $original = $parts[++$index] ?? null;
             }
+
+            if (count($files) >= self::MAX_FILES) {
+                return ['files' => $files, 'truncated' => true];
+            }
+
             $files[] = [
                 'path' => str_replace('\\', '/', $path),
                 'original_path' => is_string($original) && $original !== '' ? str_replace('\\', '/', $original) : null,
@@ -296,7 +353,7 @@ final readonly class WorkspaceInspector
         }
         usort($files, static fn(array $left, array $right): int => [$left['path'], $left['original_path'] ?? ''] <=> [$right['path'], $right['original_path'] ?? '']);
 
-        return $files;
+        return ['files' => $files, 'truncated' => false];
     }
 
     /** @param FileChange $file */
@@ -329,7 +386,7 @@ final readonly class WorkspaceInspector
             'original_path' => $file['original_path'],
             'declarations' => $this->declarationDelta($baseline?->declarations ?? [], $current?->declarations ?? []),
             'references' => $this->referenceDelta($baseline?->references ?? [], $current?->references ?? []),
-            'errors' => array_slice($errors, 0, 20),
+            'errors' => $errors,
         ];
     }
 
@@ -354,7 +411,7 @@ final readonly class WorkspaceInspector
         usort($added, $sort);
         usort($removed, $sort);
 
-        return compact('added', 'removed');
+        return ['added' => $added, 'removed' => $removed];
     }
 
     /** @param list<array<string,mixed>> $items @return array<string,array{relationship:string,target:string,confidence:string}> */
