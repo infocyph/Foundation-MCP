@@ -6,6 +6,8 @@ namespace Infocyph\FoundationMcp\Mcp\Tool;
 
 final readonly class UsagesTool
 {
+    private const int MAX_DIAGNOSTICS = 50;
+
     public const string DESCRIPTION = 'Return deterministic bounded references to a PHP symbol with source symbol, relationship, source location, and exact/resolved/lexical/dynamic confidence.';
 
     public const array INPUT_SCHEMA = [
@@ -42,6 +44,7 @@ final readonly class UsagesTool
         int $limit = 100,
     ): array {
         $usages = $this->services->references()->usages($symbol, $package, $relationships, $limit);
+        $allDiagnostics = $this->services->references()->diagnostics($package);
 
         return [
             'symbol' => $symbol,
@@ -49,7 +52,8 @@ final readonly class UsagesTool
             'relationships' => $relationships,
             'count' => count($usages),
             'usages' => $usages,
-            'diagnostics' => array_slice($this->services->references()->diagnostics($package), 0, 50),
+            'diagnostics' => array_slice($allDiagnostics, 0, self::MAX_DIAGNOSTICS),
+            'diagnostics_truncated' => count($allDiagnostics) > self::MAX_DIAGNOSTICS,
         ];
     }
 }
