@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Infocyph\FoundationMcp\Foundation;
 
+use Infocyph\FoundationMcp\Analysis\Internal\PhpNodeBudgetVisitor;
 use Infocyph\FoundationMcp\Analysis\SourceFileFinder;
 use Infocyph\FoundationMcp\Composer\ComposerInspector;
 use Infocyph\FoundationMcp\Foundation\Internal\AttributeRouteScanner;
@@ -78,9 +79,7 @@ final class RouteInspector
         $this->values = new RouteValueResolver();
     }
 
-    /**
-     * @return array{route_files:list<string>,http_methods:list<string>,routes:list<RouteEntry>,diagnostics:list<Diagnostic>}
-     */
+    /** @return array{route_files:list<string>,http_methods:list<string>,routes:list<RouteEntry>,diagnostics:list<Diagnostic>} */
     public function inspect(): array
     {
         $this->routes = [];
@@ -174,7 +173,8 @@ final class RouteInspector
                     ? $attributes['enabled']
                     : null;
             }
-        } catch (RuntimeException) {
+        } catch (RuntimeException $error) {
+            $this->diagnostic('attribute_config_invalid', $relative, null, $error->getMessage());
         }
 
         return null;
@@ -190,10 +190,7 @@ final class RouteInspector
         );
     }
 
-    /**
-     * @param list<Node\Stmt> $nodes
-     * @return list<Node\Stmt\ClassMethod>
-     */
+    /** @param list<Node\Stmt> $nodes @return list<Node\Stmt\ClassMethod> */
     private function classMethods(array $nodes, string $name): array
     {
         $methods = [];
@@ -228,7 +225,16 @@ final class RouteInspector
                 'line' => $line,
                 'message' => $message,
             ];
+
+            return;
         }
+
+        $this->diagnostics[self::MAX_DIAGNOSTICS - 1] = [
+            'code' => 'diagnostics_truncated',
+            'source' => null,
+            'line' => null,
+            'message' => sprintf('Route diagnostics are limited to %d entries.', self::MAX_DIAGNOSTICS),
+        ];
     }
 
     private function finalize(): void
@@ -257,7 +263,7 @@ final class RouteInspector
                 continue;
             }
             if (++$count > self::MAX_ATTRIBUTE_FILES) {
-                $this->diagnostic('output_limit_exceeded', null, null, sprintf(
+                $this->diagnostic('attribute_file_limit_exceeded', null, null, sprintf(
                     'Attribute route inspection stopped after %d application PHP files.',
                     self::MAX_ATTRIBUTE_FILES,
                 ));
@@ -345,6 +351,7 @@ final class RouteInspector
 
         $traverser = new NodeTraverser();
         $traverser->addVisitor(new NameResolver(null, ['preserveOriginalNames' => true, 'replaceNodes' => false]));
+        $traverser->addVisitor(new PhpNodeBudgetVisitor());
 
         try {
             /** @var list<Node\Stmt> $resolved */
@@ -355,18 +362,31 @@ final class RouteInspector
             $this->diagnostic('parse_error', $source, $error->getStartLine() ?: null, $error->getRawMessage());
 
             return null;
+        } catch (RuntimeException $error) {
+            $this->diagnostic('inspection_limit_exceeded', $source, null, $error->getMessage());
+
+            return null;
         }
     }
 
     private function read(string $path): string
     {
-        $size = filesize($path);
-        if ($size !== false && $size > self::MAX_SOURCE_BYTES) {
-            throw new RuntimeException('Route source exceeds the 1 MiB inspection limit.');
-        }
-        $source = file_get_contents($path);
-        if ($source === false || strlen($source) > self::MAX_SOURCE_BYTES || str_contains($source, "\0")) {
+        $handle = fopen($path, 'rb');
+        if ($handle === false) {
             throw new RuntimeException('Route source could not be read safely.');
+        }
+
+        try {
+            $source = stream_get_contents($handle, self::MAX_SOURCE_BYTES + 1);
+        } finally {
+            fclose($handle);
+        }
+
+        if (!is_string($source) || str_contains($source, "\0")) {
+            throw new RuntimeException('Route source could not be read safely.');
+        }
+        if (strlen($source) > self::MAX_SOURCE_BYTES) {
+            throw new RuntimeException('Route source exceeds the 1 MiB inspection limit.');
         }
 
         return $source;
@@ -391,10 +411,10 @@ final class RouteInspector
     private function routeLimitDiagnostic(): void
     {
         foreach ($this->diagnostics as $item) {
-            if ($item['code'] === 'output_limit_exceeded') {
+            if ($item['code'] === 'route_limit_exceeded') {
                 return;
             }
         }
-        $this->diagnostic('output_limit_exceeded', null, null, sprintf('Route inspection is limited to %d routes.', self::MAX_ROUTES));
+        $this->diagnostic('route_limit_exceeded', null, null, sprintf('Route inspection is limited to %d routes.', self::MAX_ROUTES));
     }
 }
