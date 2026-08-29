@@ -1,0 +1,114 @@
+name: "Foundation MCP Release Evidence"
+
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-php84:
+    name: "Linux / PHP 8.4"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          coverage: none
+          extensions: fileinfo
+          tools: composer:v2
+      - run: composer install --no-interaction --prefer-dist
+      - run: composer ic:ci --without-analysis
+      - run: php bin/foundation-mcp --version
+
+  linux-php85:
+    name: "Linux / PHP 8.5"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.5"
+          coverage: none
+          extensions: fileinfo
+          tools: composer:v2
+      - run: composer install --no-interaction --prefer-dist
+      - run: composer ic:ci --without-analysis
+      - run: php bin/foundation-mcp --version
+
+  windows-php84:
+    name: "Windows / PHP 8.4"
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          coverage: none
+          extensions: fileinfo
+          tools: composer:v2
+      - run: composer install --no-interaction --prefer-dist
+      - run: composer ic:ci --without-analysis
+      - run: php bin/foundation-mcp --version
+
+  windows-php85:
+    name: "Windows / PHP 8.5"
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.5"
+          coverage: none
+          extensions: fileinfo
+          tools: composer:v2
+      - run: composer install --no-interaction --prefer-dist
+      - run: composer ic:ci --without-analysis
+      - run: php bin/foundation-mcp --version
+
+  protocol:
+    name: "Official SDK STDIO protocol"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.5"
+          coverage: none
+          extensions: fileinfo
+          tools: composer:v2
+      - run: composer install --no-interaction --prefer-dist
+      - run: composer ic:test:code
+
+  release-guard:
+    name: "PHPForge release gate and benchmarks"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.5"
+          coverage: none
+          extensions: fileinfo
+          tools: composer:v2
+      - run: composer install --no-interaction --prefer-dist
+      - id: release_guard
+        continue-on-error: true
+        run: composer ic:release:guard
+      - name: PHPStan diagnostics
+        if: steps.release_guard.outcome == 'failure'
+        run: vendor/bin/phpstan analyse --configuration vendor/infocyph/phpforge/resources/phpstan.neon.dist --error-format=table --no-progress
+      - name: Enforce release guard
+        if: steps.release_guard.outcome == 'failure'
+        run: exit 1
+      - run: composer ic:benchmark
+      - run: composer benchmark:representative
+      - run: composer ic:benchmark:validate .phpforge-report/benchmark-result.json

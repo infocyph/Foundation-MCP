@@ -68,7 +68,7 @@ Infbyte should ultimately contain:
 }
 ```
 
-Keeping PHPForge explicitly in Infbyte is intentional even though Foundation MCP also requires it: Infbyte itself uses PHPForge as its QA/release toolchain, while Foundation MCP uses PHPForge as its mandatory source-analysis substrate.
+Keeping PHPForge explicitly in Infbyte is intentional: Infbyte itself uses PHPForge as its QA/release toolchain, while Foundation MCP uses PHPForge as its mandatory development-analysis substrate. Composer does not install a dependency package's `require-dev` transitively, so consumers that use Foundation MCP must require PHPForge explicitly under their own `require-dev`.
 
 Production installation remains clean:
 
@@ -83,14 +83,14 @@ Foundation MCP must add no service provider, route, module, config file, worker,
 Direct installation into another Foundation host is supported as a secondary path:
 
 ```bash
-composer require --dev infocyph/foundation-mcp
+composer require --dev infocyph/foundation-mcp:^1.0 infocyph/phpforge:dev-main@dev
 ```
 
 ---
 
 ## 3. Mandatory Package Dependencies
 
-Foundation MCP is itself development tooling, but the dependencies it needs **while the MCP server is running** belong in its Composer `require` section.
+Foundation MCP is itself development tooling. Its stable protocol/runtime libraries belong in Composer `require`, while PHPForge is an explicit development-time operational prerequisite kept in `require-dev`.
 
 The required package contract is:
 
@@ -98,13 +98,18 @@ The required package contract is:
 {
     "require": {
         "php": "^8.4",
-        "mcp/sdk": "^0.8.0",
+        "composer-runtime-api": "^2.1",
+        "mcp/sdk": "^0.8.0"
+    },
+    "require-dev": {
         "infocyph/phpforge": "dev-main@dev"
     }
 }
 ```
 
-`infocyph/phpforge` is **not** `require-dev` for Foundation MCP. It is a hard operational dependency of Foundation MCP.
+`composer-runtime-api ^2.1` is a virtual Composer runtime contract, not a dependency on full `composer/composer`. It is required because Foundation MCP directly uses `Composer\InstalledVersions`, including `getInstallPath()` for the strictly root-matched runtime fallback path.
+
+`infocyph/phpforge` is a **require-dev** dependency of Foundation MCP and a hard operational prerequisite whenever the MCP is used. Consuming projects must require it explicitly under their own `require-dev`; `doctor` and server startup fail when it is absent.
 
 Foundation MCP must not duplicate parser/static-analysis/refactoring/testing packages that PHPForge already provides through its toolchain. In particular, do not separately require packages merely because they are used internally by PHPForge's analysis stack, including PHP parser, Rector, PHPStan, Psalm, Symfony Process, Pest, PHPCS, Pint or benchmark tooling.
 
@@ -114,11 +119,11 @@ The hard rule is:
 
 `foundation-mcp doctor` and CI must verify that the PHPForge installation provides the parser/analysis capabilities Foundation MCP requires. A broken/incomplete PHPForge installation is an invalid Foundation MCP environment, not a reason to silently downgrade analysis quality.
 
-Foundation MCP itself should have no extra `require-dev` package unless a future test/build need cannot be supplied by PHPForge. For this release, the target is no additional dev dependency.
+Beyond PHPForge, Foundation MCP should have no extra `require-dev` package unless a future test/build need cannot be supplied by PHPForge.
 
 ---
 
-## 4. Why PHPForge Is a Runtime Dependency of the MCP
+## 4. Why PHPForge Is a Mandatory Development Prerequisite
 
 Foundation MCP requires PHPForge for the development intelligence it exposes, not merely for maintaining Foundation MCP's own repository.
 
@@ -133,7 +138,7 @@ Foundation MCP should use that environment for:
 - code-quality/standards context where appropriate;
 - release/CI validation of Foundation MCP itself.
 
-Foundation MCP must not shell out to PHPForge for every source query. Analysis remains in-process where practical for performance. PHPForge is the mandatory dependency substrate; Foundation MCP owns the MCP-oriented indexing/query semantics.
+Foundation MCP must not shell out to PHPForge for every source query. Analysis remains in-process where practical for performance. PHPForge is the mandatory development-analysis substrate; Foundation MCP owns the MCP-oriented indexing/query semantics.
 
 ---
 
@@ -154,7 +159,9 @@ Foundation MCP
 Infbyte
 ```
 
-Use `mcp/sdk ^0.8.0`, which supports the current MCP `2026-07-28` protocol revision and compatibility with the prior protocol era.
+Use `mcp/sdk ^0.8.0`.
+
+The SDK itself contains both the handshake-era MCP lifecycle through `2025-11-25` and the newer `2026-07-28` stateless lifecycle. Foundation MCP is intentionally **STDIO-only**, so its production protocol contract follows the latest SDK lifecycle actually served over STDIO: `2025-11-25` in `mcp/sdk v0.8.0`. The SDK's `2026-07-28` server lifecycle is implemented through `buildStateless()` and `StatelessHttpTransport`; Foundation MCP must not add an HTTP transport merely to claim that revision. Revisit this boundary only when the official SDK exposes the modern lifecycle over a transport compatible with Foundation MCP's local STDIO-only policy.
 
 Use the SDK for:
 
@@ -298,7 +305,9 @@ runtime_activation_unknown
 
 Never equate package presence with runtime activation. Foundation capabilities are lazy and package presence alone is not activation.
 
-Do not execute `ModuleCatalog` or bootstrap Foundation just to read it; parse installed source statically through the PHPForge-provided parser stack.
+Do not execute `ModuleCatalog` or bootstrap Foundation just to read it; parse installed source statically through the PHPForge-provided parser stack. The catalog reader accepts only literal catalog data, rejects executable/dynamic expressions and keeps reads bounded to the Composer-authorized Foundation install root.
+
+The initial catalog-intelligence layer derives catalog, package, config and runtime-unknown statuses without scanning the project. `statically_referenced` is added later by the reference index when project-source evidence exists.
 
 ---
 
@@ -341,6 +350,8 @@ Support:
 2. custom applications directly using Infocyph Foundation.
 
 Root discovery starts from the current working directory and walks upward unless `--root` is supplied.
+
+An explicit `--root` is authoritative: resolve exactly that directory and do not climb above it. This keeps client configuration deterministic and prevents a mistyped explicit root from silently selecting a parent project.
 
 Evidence may include:
 
@@ -391,22 +402,27 @@ Read:
 
 - project `composer.json`;
 - `composer.lock`;
-- `Composer\InstalledVersions` where suitable;
-- generated installed metadata when necessary;
-- installed package `composer.json` files.
+- `vendor/composer/installed.json` as the normal installed-state source;
+- `Composer\InstalledVersions` only when its reported root canonicalizes to the same resolved host project;
+- installed package `composer.json` files as lower-precedence metadata fallback.
+
+Never execute target-project `vendor/composer/installed.php` merely to inspect Composer state. Foundation MCP must not turn generated PHP metadata into an execution path when equivalent JSON metadata is available.
+
+Composer metadata reads are bounded; the initial production limit is 32 MiB per Composer metadata JSON file. Package install paths are canonicalized with `realpath()` before being authorized. Composer path-repository/symlink installs may resolve outside the host root and are allowed only because their canonical root came from that project's installed Composer metadata.
 
 Expose:
 
 - runtime/dev direct dependencies;
 - transitive graph;
-- exact locked/installed versions;
-- source references;
-- install paths;
+- exact locked/installed versions kept as distinct values;
+- locked/installed source references kept as distinct values;
+- deterministic package state such as matched, declared-unlocked, missing-install, installed-unlocked, version-mismatch and source-reference-mismatch;
+- canonical install paths;
 - autoload mappings;
 - suggest/provide/replace/conflict metadata;
-- PHP/platform requirements;
-- package ownership;
-- missing package and lock/install mismatch diagnostics.
+- runtime/dev PHP/platform requirements;
+- package ownership by canonical install root;
+- missing package, invalid metadata and lock/install mismatch diagnostics.
 
 Do not implement a Composer solver and do not require full `composer/composer` just to inspect local metadata.
 
@@ -418,20 +434,27 @@ Do not add `composer/semver` unless the implementation proves a necessary operat
 
 The production analysis path is the parser/analysis environment supplied by required PHPForge.
 
-Foundation MCP must support static extraction of:
+Foundation MCP statically extracts:
 
 - namespace/imports/aliases;
 - class/interface/trait/enum/function declarations;
-- methods/properties/constants/enum cases;
+- methods/properties/promoted properties/constants/enum cases;
 - parameters/types/return types;
 - inheritance/implements/trait relationships;
 - attributes;
-- PHPDoc summaries;
+- bounded PHPDoc summaries;
 - constructor/static/function calls;
-- resolvable method calls;
+- resolvable and lexical method/property calls;
 - type references;
-- literal arrays used by Foundation/module/config registration;
-- file/line locations.
+- bounded literal arrays used by Foundation/module/config registration;
+- file/line locations;
+- per-reference confidence (`resolved`, `lexical`, `dynamic` at analyzer level; `exact` is added by indexes where declaration identity is proven).
+
+The analyzer works in-process through the PHP parser supplied by the mandatory PHPForge dependency graph. It does not add a second direct parser dependency, does not shell out to PHPForge per file, does not retain full ASTs after compact extraction and does not execute host source.
+
+Project source is constrained to approved project paths; package source is authorized only for the package explicitly requested using Composer-resolved install roots. Reads are limited to `.php` regular files, protected by the secret policy and bounded to 2 MiB per source file. Literal extraction is independently bounded by array count, item count, depth and string size.
+
+Parse errors are file-local structured results. One malformed PHP file must not make the analyzer unusable for unrelated files. Unchanged analysis is cached by canonical file identity plus content fingerprint and automatically invalidates when source content changes. The same parser pipeline may analyze trusted in-memory source obtained from another approved boundary, such as Git `HEAD`, so workspace deltas do not require temporary project files or source execution.
 
 The server must never `require` arbitrary project/package source files for discovery and must never use Reflection against host application classes as its primary analysis mechanism.
 
@@ -541,16 +564,16 @@ Inspect `bootstrap/providers.php` and equivalent host registration without insta
 
 ### Configuration
 
-Understand Foundation precedence:
+Understand the precedence implemented by the installed Foundation `ConfigLoader`/`ConfigRepository`:
 
 ```text
 Foundation defaults
--> selected preset
 -> project config/*.php
+-> selected preset
 -> inline bootstrap values
 ```
 
-Return key paths, literal defaults, referenced classes, environment variable names, ownership and source evidence. Never read actual `.env` values.
+The inspector derives Foundation default sources from the installed Foundation config contract, statically reads project config and selected preset arrays, and correlates bootstrap runtime/inline configuration without executing application or package code. It returns key paths, literal defaults where provable, referenced classes, environment variable names/default literals, ownership and source evidence. Custom `paths.config` is followed only when it is a static project-contained path. Actual `.env` values are never loaded, and secret-looking literals/defaults are redacted.
 
 ### Schedules
 
@@ -561,11 +584,17 @@ Inspect `routes/schedule.php`, fluent timing/policy calls, stable schedule ident
 Keep distinct:
 
 1. Foundation application maintenance workers from `routes/workers.php` / `WorkerProvider`;
-2. Omnibus messaging workers configured through messaging config.
+2. Omnibus messaging workers configured through `config/messaging.php`.
+
+`FoundationWorkerInspector` reads only the canonical maintenance-worker source, accepts bounded static array/provider-callback declarations, preserves conditional/dynamic registrations, reports the installed Foundation version, and redacts literal worker options without executing workers or Foundation.
+
+`OmnibusWorkerInspector` never infers queue workers from arbitrary classes. It reads worker/worker-group keys only from `config/messaging.php`, reuses the redacting config extractor, and derives the available worker option-field contract from the explicitly authorized installed `infocyph/omnibus` `WorkerOptions` constructor. `WorkerInspector` returns the two categories under separate `foundation_workers` and `omnibus_workers` keys so callers cannot accidentally collapse maintenance and messaging semantics.
 
 ### Runtime/bootstrap
 
-Inspect bootstrap runtime selection, base path and inline options. Preserve the four explicit Foundation runtime graphs.
+`RuntimeInspector` statically reads `bootstrap/app.php` and derives the available public runtime entry points from the installed Foundation `src/Foundation.php` contract instead of copying a mutable registry. It preserves exactly the `web`, `cli`, `worker` and `scheduler` graphs, resolves `Foundation::preset(RuntimeMode, preset, config)` where statically possible, records the selected runtime/preset/source line, and evaluates bounded/redacted inline bootstrap options through the same config extractor used elsewhere.
+
+Canonical `dirname(__DIR__)` / equivalent bootstrap-root expressions are returned semantically as `project_root`; arbitrary absolute or parent-traversing base paths are not exposed. Dynamic runtime, preset, config and base-path expressions remain explicitly dynamic. Neither the host bootstrap nor installed Foundation runtime methods are executed.
 
 ### Modules
 
@@ -577,9 +606,15 @@ Use the installed Foundation `ModuleCatalog`, not a copied Foundation-MCP regist
 
 Build lazy in-memory indexes over project source and requested dependency source.
 
-The symbol index records declarations, signatures, ownership, relationships and line ranges.
+The symbol index records declarations, signatures, ownership, relationships and line ranges. It is not built during project detection or lightweight project-summary work. Project indexing begins only when symbol-oriented intelligence is requested; dependency symbol indexing begins only for the explicitly requested package.
 
-The reference index records relationships such as:
+Source discovery is Composer/host-root aware. Project indexing covers discovered application/test roots plus approved structural roots, skips excluded directories, secret-bearing paths and nested symlinks, and never scans `vendor/`. Package indexing derives roots from that installed package's Composer autoload metadata instead of walking the entire package/dependency tree.
+
+The symbol index keeps compact per-file entries. A path/size/mtime/ctime metadata state is used to identify unchanged files; only added/changed files are re-analyzed, removed files are evicted, and `PhpAnalyzer` still verifies changed contents through its stronger content fingerprint. Duplicate declarations are preserved as multiple candidates rather than guessed away. Exact symbol spelling is preferred and case-folded matching is a fallback that may return ambiguity.
+
+Per-file parser/analysis failures become bounded index diagnostics without preventing symbols from unrelated valid files from being returned.
+
+The reference index reuses the same lazy source manifest/analyzer stack and records:
 
 ```text
 import
@@ -590,16 +625,13 @@ trait-use
 attribute
 type
 call
-route
-command
-provider
-config
-worker
-schedule
-test
+class_constant
+property
 ```
 
-Every reference carries confidence:
+Foundation-specific relationships such as route, command, provider, config, worker, schedule and test are added by their dedicated inspectors/relationship layers rather than guessed from generic PHP nodes.
+
+Every generic reference carries source path/line, owning source symbol when statically attributable, target, relationship and confidence:
 
 ```text
 exact
@@ -608,21 +640,29 @@ lexical
 dynamic
 ```
 
+`exact` is promoted only when a unique compatible declaration exists in the current symbol index. Promotion is relationship/kind aware: a lexical method name is never made exact just because an unrelated global function has the same text. Duplicate declaration candidates therefore prevent exact promotion. Dynamic calls remain dynamic.
+
+Usage queries are deterministic, case-preserving with case-folded fallback, support relationship filtering and are hard-bounded to at most 500 results. Project usage indexing is lazy; package-internal usage indexing occurs only for an explicitly requested package. Reference entries refresh incrementally using the same manifest state, while declaration changes can still alter exact-confidence decoration without forcing unrelated files to be reparsed.
+
 Dynamic PHP that cannot be proven statically must be reported as unresolved rather than guessed.
 
 ---
 
 ## 19. Related-Test Discovery
 
-For a source target, rank related tests by:
+For source symbols and project files, related tests are ranked by evidence in this order:
 
 1. exact symbol references;
 2. direct construction/call references;
-3. namespace/path relationships;
+3. path relationships;
 4. filename conventions;
 5. lexical fallback.
 
-Return confidence. Filename similarity alone is never an exact relationship.
+The `TestLocator` reuses the lazy symbol/reference indexes and Composer-aware `SourceFileFinder`; it does not maintain a second source index. Test roots come from Composer `autoload-dev`/discovered test roots plus conventional `tests/`, `test/` and `spec/` directories, so custom test layouts remain supported.
+
+A unique exact reference receives exact confidence; direct resolved calls/construction receive resolved confidence; path, filename and text evidence remain lexical. Filename or path similarity alone is never upgraded to exact. Ambiguous source symbols fail explicitly rather than combining unrelated candidates.
+
+File targets are canonicalized through the project `PathPolicy`. Files without PHP declarations can still find tests through path/filename and lexical evidence. Lexical fallback is bounded to 256 KiB per test file and 8 MiB total, rejects binary/invalid UTF-8 content, and never escapes approved project/test roots. Results are deterministically sorted and hard-bounded to 100 candidates.
 
 ---
 
@@ -630,18 +670,20 @@ Return confidence. Filename similarity alone is never an exact relationship.
 
 Git integration is read-only and optional.
 
+`GitRunner` is the only Git subprocess boundary. It uses argument-vector `proc_open()` calls with `bypass_shell`, a fixed read-only operation surface and no caller-selectable Git refs. `WorkspaceInspector` reads only status/HEAD/branch and approved `HEAD:<project-relative-path>` blobs; project-relative Git paths are normalized, secret-checked and denied for traversal or `.git` metadata access.
+
 Expose:
 
 - branch/HEAD/detached state;
 - dirty state;
 - staged/unstaged/untracked files;
-- add/delete/rename status;
-- changed PHP declarations/references;
-- route/command/provider/config/module/worker/schedule changes;
-- Composer dependency changes;
-- initial affected tests/symbols.
+- add/delete/rename/copy/type/unmerged status;
+- changed PHP declarations/references by comparing current approved source with the fixed Git `HEAD` baseline through the same in-process PHP analyzer;
+- route/command/provider/config/module/worker/schedule/runtime/composer structural change areas;
+- Composer dependency-change signal;
+- initial affected tests/symbols through the existing related-test/index layers.
 
-Use argument-safe `proc_open()` calls and a fixed read-only Git allowlist.
+Status output is NUL-delimited and bounded; workspace results are capped to 500 changed files, deeper PHP delta analysis to 200 changed PHP files and initial related tests to 100. Git errors become diagnostics rather than application bootstrap paths.
 
 Never call through `sh -c`, `bash -c`, `cmd /c` or PowerShell command strings.
 
@@ -651,6 +693,8 @@ No mutating Git command is permitted.
 
 ## 21. Dependency and Change Impact
 
+`DependencyChangeAnalyzer` compares the current Composer working tree with the fixed Git `HEAD` baseline without invoking Composer or accepting arbitrary refs. Composer JSON reads retain the 32 MiB-class bound and invalid/missing baselines become structured diagnostics.
+
 When Composer files change, detect:
 
 - package additions/removals;
@@ -659,10 +703,12 @@ When Composer files change, detect:
 - runtime/dev movement;
 - source-reference changes;
 - changed transitive set;
-- affected Foundation modules;
-- project code referencing changed packages.
+- affected Foundation modules through the installed `ModuleCatalog`;
+- project code referencing changed packages by correlating current/baseline package PSR-4 metadata with the project reference index.
 
-Provide deterministic bounded impact analysis for:
+Project-reference correlation is capped to 500 entries and does not scan package source or all of `vendor/`.
+
+`ImpactAnalyzer` provides deterministic bounded impact analysis for:
 
 ```text
 symbol
@@ -674,9 +720,9 @@ config
 workspace changes
 ```
 
-Combine evidence from references, inheritance, implementations, traits, registrations, module/package graph, config relationships, Git changes and related tests.
+It combines declaration/reference evidence, dependency dependents, purpose-first modules, route/config registrations, Git workspace deltas, Composer changes and related tests. Symbol ambiguity is rejected rather than guessed. Package impact is namespace/graph aware; module impact expands only catalog-owned package/config relationships; route/config impact is delegated to the existing static inspectors; current-change impact consumes workspace/dependency results instead of reparsing diffs independently.
 
-Direct evidence and lexical/inferred evidence must remain distinguishable.
+Every evidence record retains an explicit confidence (`exact`, `resolved`, `lexical`, `dynamic`) and reason so direct evidence remains distinguishable from inferred evidence. Impact results are deterministically sorted and hard-bounded to at most 200 requested entries, with internal evidence accumulation also capped.
 
 ---
 
@@ -729,9 +775,15 @@ path
 text
 ```
 
+The domain search engine uses deterministic score bands and stable tie-breakers. Pure path/text searches do not invoke the PHP parser. Symbol searches activate only the relevant lazy symbol index. `packages` requires an explicit installed package; `all` searches the project plus installed Foundation and, when supplied, one explicit package rather than scanning all of `vendor/`.
+
+Search output is hard-bounded to 100 results. Resource discovery is capped at 2,500 files per target; text search reads at most 512 KiB per file and 16 MiB total per target, skips secret/binary/oversized resources and emits redacted excerpts capped at 240 bytes.
+
 ### `foundation_read`
 
 Bounded safe read of approved project/dependency resources with line ranges and secret/path protection.
+
+The shared reader canonicalizes project/package paths through `PathPolicy`, requires an explicitly selected installed package for dependency reads, denies secret-bearing and binary resources, caps a file at 1 MiB and a response at 400 lines (200 default), redacts suspicious literals, and returns canonical relative path, actual line range, total lines, size, SHA-256 fingerprint and truncation state.
 
 ### `foundation_symbol`
 
@@ -848,6 +900,8 @@ Approved read roots are only:
 1. resolved host project root;
 2. Composer-registered install roots for explicitly selected installed packages.
 
+Approved project/package roots are canonicalized once when the server context is built and remain immutable for that server process. Path-repository/symlink package installs are allowed only through their Composer-resolved canonical install root.
+
 For every file read:
 
 - reject NUL bytes;
@@ -903,6 +957,8 @@ foundation_read
   -> only required lines
 ```
 
+The underlying search/read services already enforce their own hard limits before MCP serialization: search returns at most 100 ranked results and 240-byte excerpts; text scanning is bounded by files and bytes; reads are limited to 1 MiB and 400 lines. Related-test discovery is also capped at 100 results and its lexical fallback at 256 KiB per file / 8 MiB total. Workspace inspection is capped to 500 files / 200 PHP deltas / 100 initial tests, dependency-reference correlation to 500 entries, Git subprocess output to 4 MiB and impact requests to 200 results. MCP handlers may impose tighter defaults but must never widen these service limits.
+
 Never return whole repositories or many full source files from a search call.
 
 ---
@@ -938,6 +994,8 @@ Build symbol/reference/route/etc. indexes only when the requested operation need
 
 Never scan all `vendor/` or parse every installed dependency on startup.
 
+Path/text search remains parser-free. Symbol search activates only the relevant project or explicit-package symbol index. Search does not scan every installed dependency: Foundation is a known target and any other dependency target must be explicit. Related-test discovery reuses the already-lazy project symbol/reference indexes and scans only discovered test roots for bounded lexical fallback. Git status/HEAD inspection remains metadata-first; PHP, dependency and impact indexes are activated only when change intelligence requires them.
+
 ### In-memory cache
 
 Cache compact parsed metadata using path + size + mtime/content fingerprint as appropriate. Invalidate automatically when files or `composer.lock` change.
@@ -962,6 +1020,13 @@ unsupported_project
 phpforge_unavailable
 analysis_backend_unavailable
 analysis_backend_incompatible
+composer_lock_missing
+composer_lock_invalid
+installed_metadata_missing
+installed_metadata_invalid
+dependency_state_mismatch
+module_catalog_missing
+module_catalog_invalid
 resource_not_found
 package_not_installed
 symbol_not_found
@@ -1037,10 +1102,18 @@ Foundation-MCP/
 │   │   └── SourceRoots.php
 │   ├── Composer/
 │   │   ├── ComposerInspector.php
+│   │   ├── ComposerMetadataReader.php
 │   │   ├── InstalledPackage.php
-│   │   └── DependencyGraph.php
+│   │   ├── DependencyGraph.php
+│   │   └── DependencyChangeAnalyzer.php
 │   ├── Analysis/
+│   │   ├── AnalyzedFile.php
 │   │   ├── PhpAnalyzer.php
+│   │   ├── SourceFileFinder.php
+│   │   ├── Internal/
+│   │   │   ├── PhpDeclarationVisitor.php
+│   │   │   ├── PhpReferenceVisitor.php
+│   │   │   └── PhpLiteralVisitor.php
 │   │   ├── SymbolIndex.php
 │   │   ├── ReferenceIndex.php
 │   │   ├── SearchEngine.php
@@ -1053,9 +1126,13 @@ Foundation-MCP/
 │   │   ├── CommandInspector.php
 │   │   ├── ProviderInspector.php
 │   │   ├── ConfigInspector.php
+│   │   ├── FoundationWorkerInspector.php
+│   │   ├── OmnibusWorkerInspector.php
 │   │   ├── WorkerInspector.php
 │   │   ├── ScheduleInspector.php
-│   │   └── RuntimeInspector.php
+│   │   ├── RuntimeInspector.php
+│   │   └── Internal/
+│   │       └── InstalledRuntimeContract.php
 │   ├── Git/
 │   │   ├── GitRunner.php
 │   │   └── WorkspaceInspector.php
@@ -1100,7 +1177,7 @@ Foundation-MCP/
 └── PROJECT_PLAN.md
 ```
 
-Avoid interfaces/classes created only for symmetry. Introduce abstractions only at real replaceable/testing boundaries.
+Avoid interfaces/classes created only for symmetry. Introduce abstractions only at real replaceable/testing boundaries. `ComposerMetadataReader` is an intentional boundary between bounded raw Composer artifact acquisition and semantic package/graph correlation; it keeps file/runtime metadata mechanics out of `ComposerInspector`. `SourceFileFinder` is the shared PHP source-manifest boundary used by the lazy symbol/reference indexes; it centralizes PHP-source exclusion, secret, symlink and Composer-autoload discovery. `SearchEngine` owns a separate bounded text/resource discovery path because search also covers non-PHP project/config/route/doc files and must not force AST parsing. `ResourceReader` is the single safe line-range read service reused by later MCP read/resource handlers. `TestLocator` is a ranking layer over the existing indexes/source manifest rather than another parser/index. `WorkerInspector` is a deliberate semantic aggregator: its two concrete inspectors preserve Foundation maintenance-worker and Omnibus messaging-worker ownership instead of creating a generic worker abstraction. `GitRunner` is a narrow command-safety boundary rather than a generic process abstraction; `DependencyChangeAnalyzer` owns Composer snapshot comparison, while `ImpactAnalyzer` is the evidence-composition layer over existing domain services.
 
 ---
 
@@ -1108,7 +1185,7 @@ Avoid interfaces/classes created only for symmetry. Introduce abstractions only 
 
 ### Unit
 
-Cover project detection, Composer graph, ModuleCatalog parsing, PHP analysis, symbols/references, search ranking, routes, commands, providers, config, schedules, workers, Git parsing, impact analysis, related tests, redaction, path security and output limits.
+Cover project detection, Composer graph, ModuleCatalog parsing, PHP analysis, symbols/references, search ranking, routes, commands, providers, config, schedules, workers, runtime/bootstrap, Git parsing, dependency changes, impact analysis, related tests, redaction, path security and output limits.
 
 ### Integration fixtures
 
@@ -1137,7 +1214,7 @@ CI must validate against the actual current Infbyte/Foundation ecosystem: projec
 
 ### MCP protocol
 
-Use official `mcp/sdk` client integration tests against the real STDIO server for negotiation, tool/resource listing, tool calls, structured results, invalid inputs, error survival, output framing and supported protocol revisions.
+Use official `mcp/sdk` client integration tests against the real STDIO server for handshake negotiation, tool/resource listing, tool calls, structured results, invalid inputs, error survival and output framing. Protocol coverage follows revisions that the pinned official SDK actually serves over STDIO; with `mcp/sdk v0.8.0` that contract is `2025-11-25`. The `2026-07-28` stateless HTTP lifecycle is outside Foundation MCP's STDIO-only transport policy.
 
 ### Security
 
@@ -1189,7 +1266,7 @@ no unnecessary full-AST retention
 
 ## 33. PHPForge Release Gate
 
-Because PHPForge is both a **runtime dependency of Foundation MCP** and the repository QA/release toolchain, Foundation MCP's release must pass all applicable PHPForge gates available at release time, including formatting, lint/syntax, static analysis, architecture/dependency rules, complexity, security, tests, refactoring/duplicate checks, benchmarks and release constraints.
+Because PHPForge is both a **mandatory development-time operational prerequisite of Foundation MCP** and the repository QA/release toolchain, Foundation MCP's release must pass all applicable PHPForge gates available at release time, including formatting, lint/syntax, static analysis, architecture/dependency rules, complexity, security, tests, refactoring/duplicate checks, benchmarks and release constraints.
 
 Do not weaken PHPForge rules to accommodate avoidable Foundation MCP complexity.
 
@@ -1213,8 +1290,8 @@ README must document:
 
 - purpose and architecture;
 - Infbyte `require-dev` integration;
-- mandatory PHPForge dependency;
-- official `mcp/sdk` dependency;
+- mandatory PHPForge development prerequisite;
+- official `mcp/sdk` dependency and STDIO protocol boundary;
 - nine tools;
 - resources/templates;
 - exact-version and module semantics;
@@ -1257,68 +1334,101 @@ Foundation MCP is not:
 The first release includes the entire intended scope; no desired capability is intentionally deferred to a hypothetical later release.
 
 ```text
-[ ] package skeleton/composer/binary
-[ ] mcp/sdk STDIO integration
-[ ] PHPForge as mandatory `require` dependency
-[ ] PHPForge/parser compatibility doctor gate
-[ ] explicit MCP registration
-[ ] Infbyte/custom-Foundation project detection
-[ ] secure root/package path model
-[ ] Composer exact-version/package graph
-[ ] installed Foundation ModuleCatalog parser
-[ ] purpose-first module intelligence
-[ ] PHPForge-backed AST/source analyzer
-[ ] lazy symbol index
-[ ] lazy reference/usage index
-[ ] deterministic search/read
-[ ] related-test discovery
-[ ] route inspector
-[ ] command inspector
-[ ] provider inspector
-[ ] config inspector
-[ ] schedule inspector
-[ ] Foundation maintenance-worker inspector
-[ ] Omnibus worker distinction
-[ ] runtime/bootstrap inspector
-[ ] Git workspace inspector
-[ ] dependency-change analyzer
-[ ] impact analyzer
-[ ] foundation_project
-[ ] foundation_search
-[ ] foundation_read
-[ ] foundation_symbol
-[ ] foundation_usages
-[ ] foundation_inspect
-[ ] foundation_packages
-[ ] foundation_changes
-[ ] foundation_impact
-[ ] project summary resource
-[ ] architecture resource
-[ ] Composer resource
-[ ] ModuleCatalog resource
-[ ] standards resource
-[ ] safe project/package file templates
-[ ] symbol resource template
-[ ] no application bootstrap/source execution
-[ ] no arbitrary shell
-[ ] no mutation
-[ ] zero-network normal operation
-[ ] path/symlink/secret protections
-[ ] bounded output
-[ ] lazy in-memory cache/invalidation
-[ ] doctor command
+[x] package skeleton/composer/binary
+[x] mcp/sdk STDIO integration
+[x] PHPForge as mandatory development prerequisite
+[x] PHPForge/parser compatibility doctor gate
+[x] explicit MCP registration
+[x] Infbyte/custom-Foundation project detection
+[x] secure root/package path model
+[x] Composer exact-version/package graph
+[x] installed Foundation ModuleCatalog parser
+[x] purpose-first module intelligence
+[x] PHPForge-backed AST/source analyzer
+[x] lazy symbol index
+[x] lazy reference/usage index
+[x] deterministic search/read
+[x] related-test discovery
+[x] route inspector
+[x] command inspector
+[x] provider inspector
+[x] config inspector
+[x] schedule inspector
+[x] Foundation maintenance-worker inspector
+[x] Omnibus worker distinction
+[x] runtime/bootstrap inspector
+[x] Git workspace inspector
+[x] dependency-change analyzer
+[x] impact analyzer
+[x] foundation_project
+[x] foundation_search
+[x] foundation_read
+[x] foundation_symbol
+[x] foundation_usages
+[x] foundation_inspect
+[x] foundation_packages
+[x] foundation_changes
+[x] foundation_impact
+[x] project summary resource
+[x] architecture resource
+[x] Composer resource
+[x] ModuleCatalog resource
+[x] standards resource
+[x] safe project/package file templates
+[x] symbol resource template
+[x] no application bootstrap/source execution
+[x] no arbitrary shell
+[x] no mutation
+[x] zero-network normal operation
+[x] path/symlink/secret protections
+[x] bounded output
+[x] lazy in-memory cache/invalidation
+[x] doctor command
 [ ] unit/integration/ecosystem tests
-[ ] MCP protocol tests
-[ ] security tests
+[x] MCP protocol tests
+[x] security tests
 [ ] performance benchmarks
 [ ] Linux/Windows PHP 8.4/8.5 CI
 [ ] PHPForge full release gates
-[ ] README/security documentation
+[x] README/security documentation
 [ ] Infbyte require-dev integration
-[ ] composer --no-dev zero-footprint validation
+[x] composer --no-dev zero-footprint validation
 ```
 
 Update this checklist after each meaningful implementation chunk. Do not mark an item complete without implementation/test evidence.
+
+### Implementation evidence
+
+- `092e1ad9` — package skeleton, Composer contract, executable and initial SDK STDIO bootstrap.
+- `ac78615a` — initial `doctor` dependency checks for the MCP SDK, PHPForge and PHP parser availability.
+- `feat: add project detection and filesystem security model` — strict CLI root handling; immutable project context; renamed-canonical Infbyte/custom/unsupported classification; Composer-autoload source roots; project/package path containment; traversal/absolute/symlink-escape rejection; hard secret-file policy; output redaction; PHPForge parser parse-probe; unit coverage; PHP 8.4 syntax validation and local smoke validation.
+- `feat: add Composer and Foundation package intelligence` — distinct declared/locked/installed package truth; runtime/dev direct dependencies; bounded transitive graph; source-reference and install-path state; `installed.json` normal path with root-proven `InstalledVersions` fallback; no `installed.php` execution; installed package composer metadata fallback; platform requirements; canonical package ownership/roots; Foundation exact-version diagnostics; lock/install mismatch diagnostics; focused unit coverage; PHP 8.4 syntax and standalone smoke validation.
+- `9b0844b5` — bounded static parsing of installed Foundation `ModuleCatalog::MODULES` through the PHPForge-provided PHP parser; literal-only evaluation with dynamic-expression rejection; module/alias/package resolution with ambiguity checks; Composer package/config correlation; built-in/package/config/runtime-activation-safe statuses; ModuleCatalog doctor gate; focused unit coverage added; PHP 8.4 syntax validation passed locally. The dependency-complete Pest/PHPForge suite remains for CI/integration validation.
+- `617c5e9d` — PHPForge-supplied in-process PHP parser backend; compact declarations/signatures/imports/inheritance/traits/attributes/PHPDoc extraction; promoted properties/constants/enum cases; resolved/lexical/dynamic reference extraction; bounded literal arrays; explicit-project and explicit-package path authorization; secret/file/size controls; file-local parse errors; content-fingerprint cache invalidation; focused unit coverage. Local PHP 8.4 syntax validation passed for the analyzer result/entry point and literal visitor; the dependency-complete Pest/PHPForge suite remains for CI/integration validation.
+- `e8ec06af` — Composer/host-aware PHP source discovery; project-only lazy symbol build; explicitly requested package-only lazy build; excluded/secret/symlink path filtering; compact symbol ownership/source metadata; deterministic exact/case-folded lookup with duplicate ambiguity preserved; incremental added/changed/removed file refresh; per-file parse/analysis diagnostics; focused unit coverage including no-op refresh and single-file invalidation. Local PHP 8.4 syntax probes passed for the new source-finder/index constructs; the dependency-complete Pest/PHPForge suite remains for CI/integration validation.
+- `05d95cbb` — lazy project/package reference indexing over the shared source manifest/analyzer; import/generic PHP relationships; source-symbol attribution; relationship/kind-aware unique-declaration promotion to exact confidence; lexical/dynamic preservation; deterministic bounded usage lookup with relationship filters; incremental refresh; per-file diagnostics; focused coverage for false-positive exactness, package usage and one-file invalidation. The dependency-complete Pest/PHPForge suite remains for CI/integration validation.
+- `62e51109` — deterministic ranked symbol/path/text search across project/test/route/config/bootstrap/docs/Foundation/explicit-package/all scopes; pure path/text searches remain parser-free; explicit package targeting prevents broad vendor scans; secret/symlink/exclusion filtering; 2,500-file, 512 KiB/file, 16 MiB/target, 100-result and 240-byte-excerpt search bounds; canonical project/package line-range reads with 1 MiB/400-line limits, binary/secret denial, redaction, fingerprint/truncation metadata; focused tests for parser-free filesystem search, scope/package ranking, secret omission, bounded reads, redaction and traversal denial. Local PHP 8.4 syntax validation passed for the new search/read classes and focused tests; dependency-complete Pest/PHPForge execution remains for CI/integration validation.
+- `feat: add related-test discovery` — symbol/file related-test ranking over the existing lazy symbol/reference indexes; Composer `autoload-dev` plus conventional test-root discovery; exact-reference/direct-call/direct-construction/path/filename/lexical evidence bands; explicit ambiguity handling; canonical file targets; 100-result bound and 256 KiB/file / 8 MiB lexical fallback limits; focused coverage for exact class/method references, structural fallback, custom `spec/` roots, lexical-only files and input bounds. Local PHP 8.4 syntax validation passed for `TestLocator` and its focused test; dependency-complete Pest/PHPForge execution remains for CI/integration validation.
+- `e983e38e` — static Foundation/Webrick route inspection across authoritative project route files, Foundation OAuth candidates and Webrick route attributes; installed route-file/verb/resource contracts are derived from installed package source rather than copied registries; nested groups/preset groups/resource expansion/handlers/middleware/options/conditional and dynamic state are represented without application bootstrap or package execution; output/source limits and file-local parse diagnostics are enforced.
+- `d91db26c` — static `routes/console.php` command registration inspection plus non-executing `CommandDefinition::define()` metadata extraction for command names, aliases, descriptions, groups, runtime, capabilities, visibility, arguments/options and dynamic/conditional definitions; command inspector files are attached at their canonical paths.
+- `59dae9cf` — static `bootstrap/providers.php` inspection with provider groups derived from the installed Foundation contract, common/runtime effective provider graphs, declaration deduplication, project symbol/Composer ownership metadata, dynamic-state preservation and no provider instantiation.
+- `f9ffb2a5` — static Foundation configuration inspection across installed default sources, project config, selected preset and inline bootstrap configuration using the installed runtime precedence; bounded AST evaluation records literal/default/env/class/source evidence, preserves dynamic state, applies project/package path authorization and redacts secret-looking values without loading `.env` or bootstrapping the application.
+- `385648e8` — static `routes/schedule.php` inspection with installed Foundation schedule/fluent contracts, command arguments, cron shortcuts, timezone/key identity, overlap/single-server locking, timeout/memory policy, conditional/dynamic state and bounded non-executing source analysis.
+- `0875871e`, `7816c2b5` — Foundation maintenance-worker inspection limited to `routes/workers.php`, supporting bounded static array/provider-callback declarations, conditional/dynamic status, Foundation-version evidence and recursive secret redaction without worker/application execution.
+- `1172426e`, `3666c446` — Omnibus messaging-worker inspection limited to `config/messaging.php`, worker/default-worker grouping, installed `WorkerOptions` promoted-field schema derivation through the explicitly authorized Omnibus package root, and an explicit two-category `WorkerInspector` result that prevents maintenance/messaging worker conflation.
+- `feat: add runtime and change impact intelligence` — installed-contract-derived runtime/bootstrap inspection with four explicit Foundation graphs, presets, semantic project-root handling and redacted inline options; fixed read-only argument-vector Git boundary with branch/HEAD/status and approved HEAD-file reads; current-vs-HEAD PHP declaration/reference deltas and structural change areas; Composer direct/lock/transitive/source-reference change analysis with ModuleCatalog and project-reference correlation; bounded evidence-based impact analysis for symbol/file/package/module/route/config/current changes; focused tests for runtime non-execution/dynamic state, staged/unstaged/untracked/rename parsing, Git path safety, dependency scope/version/reference/transitive/module/source-reference correlation, and all impact target families. PHP 8.4 syntax validation passed for every new/modified source and focused test file; dependency-complete Pest/PHPForge execution remains for CI/integration validation.
+- `3a9897f7` — explicit official-SDK registration of the complete nine-tool production surface (`foundation_project`, `foundation_search`, `foundation_read`, `foundation_symbol`, `foundation_usages`, `foundation_inspect`, `foundation_packages`, `foundation_changes`, `foundation_impact`) over one shared lazy `ToolServices` graph; stable input/output schemas and read-only/closed-world tool annotations; lightweight project summary separated from deep change analysis; explicit package targeting and absolute-path suppression; focused cross-tool fixture plus real SDK `ServerFactory` construction coverage. Local PHP 8.4 syntax validation passed for every new tool handler, the server factory and focused tool-surface test; dependency-complete Pest/MCP protocol execution remains for the later verification phase.
+- `94d3243e` — explicit project summary, architecture, Composer, ModuleCatalog and standards resources plus safe project/package file and exact symbol resource templates; `ArchitectureInspector` moves installed-state architecture composition into the domain layer shared by tools/resources; file templates reuse the bounded/redacting `ResourceReader`; standards aggregation is source-attributed and bounded; JSON resource payloads are capped at 512 KiB; focused resource-surface fixture plus real SDK `ServerFactory` construction coverage. Local PHP 8.4 syntax validation passed for the new resource/domain classes and focused resource fixture; dependency-complete Pest/MCP protocol execution remains for the later verification phase.
+- `2ea261b5` — runtime safety hardening: `--no-git` now propagates through server/doctor services; the only production subprocess boundary remains fixed read-only Git with argument vectors, `bypass_shell` and `--no-optional-locks`; all nine tool responses pass a 1 MiB serialization budget while resources retain their existing hard limits; shared lazy services invalidate and re-detect project/Composer state when `composer.json`, `composer.lock` or installed metadata changes; doctor now checks Git policy and explicit MCP surface construction; focused safety, output-budget, Composer-invalidation, doctor and Git-index immutability tests were added. Local PHP 8.4 syntax validation passed for every new/modified source and focused test file; dependency-complete Pest/PHPForge/MCP execution remains for the later verification phase.
+- `0d01b3d0` — replaces the generic variadic SDK tool wrapper with explicit reflection-compatible handler signatures for all nine tools, preserving the global output budget while matching `mcp/sdk v0.8.0` argument binding; removes the metadata-state `stat()` suppression warning. CI proves the real `2025-11-25` STDIO tool/resource path now executes successfully end-to-end, including required-input `foundation_search`.
+- `e2e18e2c` — aligns protocol coverage with the official SDK's actual transport lifecycle: the Foundation MCP STDIO contract tests `2025-11-25`; the SDK's `2026-07-28` server lifecycle is stateless HTTP and remains outside this package's deliberate STDIO-only/non-network boundary. Removes the one-shot branch self-push workflow after branch protection proved it could not be a valid plan-update mechanism.
+- `7c645edf` — removes warning suppression from the Git process boundary and test cleanup, replaces the first PHPForge `compact()` false-positive clusters with explicit evidence arrays, and preserves the fixed read-only Git command surface. CI after this commit proved all 41 Pest tests (86,372 assertions), PHPProbe, Deptrac, Rector and Composer normalization passed; remaining QA failures were formatting/PHPCS-only.
+- `8a3e6d83` — fixes the final Pint formatting blocker and normalizes Runtime/Route diagnostic evidence. Its PHPForge QA run proves Pest, Pint, PHPProbe, Deptrac, Rector and Composer normalization all pass, leaving only eight explicit `compact()` PHPCS sites plus the independent PHPStan analysis tranche.
+- `fed4b0ec` — replaces the remaining eight `compact()` diagnostic/reference builders with explicit keyed arrays across provider, config, command, worker, schedule, route-call and PHP-reference internals. This is behavior-preserving standards normalization; the full PHPForge gate remains open until CI proves PHPCS and subsequent static-analysis/release stages green.
+- README and `SECURITY.md` now cover the complete documentation contract: purpose/architecture, Infbyte/PHPForge `require-dev`, official SDK STDIO boundary, all nine tools/resources, exact-version/module semantics, launch/doctor flows, security invariants, output/performance budgets, troubleshooting, vulnerability reporting and zero production footprint. README's lifecycle wording is synchronized with the verified `mcp/sdk v0.8.0` transport boundary (`2025-11-25` STDIO; `2026-07-28` stateless HTTP only).
+- CI on the corrected branch proves the existing integration/ecosystem/security fixtures pass on PHP 8.4 prefer-stable and proves `composer install --no-dev` succeeds without the development-only MCP/PHPForge stack. The broad unit/integration/ecosystem checklist remains open until the complete matrix and remaining fixture classes are verified.
+
+The remaining release tranche is PHPStan/static-analysis cleanup, complete unit/integration/ecosystem matrix verification, executed performance benchmark baselines, green Linux/Windows PHP 8.4/8.5 coverage, the actual Infbyte require-dev rollout and the full PHPForge release gate.
 
 ---
 
@@ -1327,7 +1437,7 @@ Update this checklist after each meaningful implementation chunk. Do not mark an
 All steps target the same production release:
 
 1. package Composer/binary + official SDK STDIO server;
-2. PHPForge runtime integration and doctor checks;
+2. PHPForge development-analysis integration and doctor checks;
 3. project/root/security model;
 4. Composer/package/Foundation detection;
 5. ModuleCatalog + Foundation architecture semantics;
@@ -1350,10 +1460,10 @@ All steps target the same production release:
 Foundation MCP is production-release ready only when:
 
 1. Infbyte can require `infocyph/foundation-mcp` only under `require-dev`.
-2. Foundation MCP directly requires `infocyph/phpforge: dev-main@dev` and `mcp/sdk ^0.8.0`.
+2. Foundation MCP directly requires `composer-runtime-api ^2.1` and `mcp/sdk ^0.8.0`, keeps `infocyph/phpforge: dev-main@dev` in `require-dev`, and refuses MCP startup when PHPForge/parser capability is unavailable.
 3. It does not duplicate PHPForge's parser/static-analysis toolchain in its Composer requirements.
 4. `doctor` proves the required PHPForge/parser analysis capability is installed and compatible.
-5. `vendor/bin/foundation-mcp` exposes the complete STDIO MCP surface.
+5. `vendor/bin/foundation-mcp` exposes the complete STDIO MCP surface over the latest lifecycle supported by the pinned SDK's STDIO server.
 6. It works for canonical Infbyte and custom Foundation hosts.
 7. It reports exact locked/installed Foundation/package versions.
 8. It reads the installed Foundation ModuleCatalog statically and preserves purpose-first semantics.

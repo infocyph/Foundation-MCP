@@ -1,0 +1,421 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Infocyph\FoundationMcp\Foundation;
+
+use Infocyph\FoundationMcp\Composer\ComposerInspector;
+use Infocyph\FoundationMcp\Project\Project;
+use Infocyph\FoundationMcp\Security\PathPolicy;
+use PhpParser\Error;
+use PhpParser\Node;
+use PhpParser\Parser;
+use PhpParser\ParserFactory;
+use RuntimeException;
+
+final class InstalledRoutingContract
+{
+    private const int MAX_ARRAY_ITEMS = 256;
+
+    private const int MAX_DEPTH = 8;
+
+    private const int MAX_RESOURCE_CACHE_ENTRIES = 64;
+
+    private const int MAX_SOURCE_BYTES = 1_048_576;
+
+    private const int MAX_STRING_BYTES = 8_192;
+
+    private readonly Parser $parser;
+
+    /** @var array<string,string>|null */
+    private ?array $methods = null;
+
+    /** @var array<string,list<array{method:string,suffix:string,action:string,key:string,nameable:bool}>> */
+    private array $resourceSpecs = [];
+
+    /** @var list<string>|null */
+    private ?array $routeFiles = null;
+
+    public function __construct(
+        private readonly Project $project,
+        private readonly ComposerInspector $composer,
+        ?Parser $parser = null,
+    ) {
+        $this->parser = $parser ?? new ParserFactory()->createForNewestSupportedVersion();
+    }
+
+    /** @return array<string, string> enum case => HTTP method */
+    public function httpMethods(): array
+    {
+        if ($this->methods !== null) {
+            return $this->methods;
+        }
+
+        $nodes = $this->parsePackageFile('infocyph/webrick', 'src/Constants/HttpMethodEnum.php');
+        $enum = $this->namedEnum($nodes, 'HttpMethodEnum');
+        if (!$enum instanceof Node\Stmt\Enum_) {
+            throw new RuntimeException('Installed Webrick HTTP-method contract could not be read statically.');
+        }
+
+        $methods = [];
+        foreach ($enum->stmts as $statement) {
+            if ($statement instanceof Node\Stmt\EnumCase && $statement->expr instanceof Node\Scalar\String_) {
+                $methods[$statement->name->toString()] = $this->normalizeHttpMethod(statement: $statement->expr->value);
+            }
+        }
+
+        if ($methods === []) {
+            throw new RuntimeException('Installed Webrick HTTP-method contract could not be read statically.');
+        }
+
+        return $this->methods = $methods;
+    }
+
+    /** @return list<array{method:string,suffix:string,action:string,key:string,nameable:bool}> */
+    public function resourceSpec(string $param = 'id', string $patchAction = 'update'): array
+    {
+        if (
+            $param === ''
+            || $patchAction === ''
+            || strlen($param) > 128
+            || strlen($patchAction) > 128
+        ) {
+            throw new RuntimeException('Resource route parameters must be non-empty and at most 128 bytes.');
+        }
+
+        $cacheKey = $param . "\0" . $patchAction;
+        if (isset($this->resourceSpecs[$cacheKey])) {
+            return $this->resourceSpecs[$cacheKey];
+        }
+
+        $nodes = $this->parsePackageFile('infocyph/webrick', 'src/Router/Definition/Registrar.php');
+        $return = $this->methodReturnExpression($nodes, 'Registrar', 'buildResourceSpec');
+        if (!$return instanceof Node\Expr) {
+            throw new RuntimeException('Installed Webrick resource-route contract could not be read statically.');
+        }
+
+        $value = $this->literal($return, [
+            'param' => $param,
+            'patchAction' => $patchAction,
+            '__http_methods' => $this->httpMethods(),
+        ]);
+        $spec = $this->normalizeResourceSpec($value);
+
+        if (count($this->resourceSpecs) < self::MAX_RESOURCE_CACHE_ENTRIES) {
+            $this->resourceSpecs[$cacheKey] = $spec;
+        }
+
+        return $spec;
+    }
+
+    /** @return list<string> */
+    public function routeFiles(): array
+    {
+        if ($this->routeFiles !== null) {
+            return $this->routeFiles;
+        }
+
+        $nodes = $this->parsePackageFile('infocyph/foundation', 'src/Routing/RouteFileLoader.php');
+        $default = $this->constructorParameterDefault($nodes, 'RouteFileLoader', 'files');
+        if (!$default instanceof Node\Expr) {
+            throw new RuntimeException('Installed Foundation route-file contract could not be read statically.');
+        }
+
+        $value = $this->literal($default, []);
+        if (!is_array($value)) {
+            throw new RuntimeException('Installed Foundation route-file contract is invalid.');
+        }
+
+        return $this->routeFiles = $this->normalizeRouteFiles($value);
+    }
+
+    /** @param list<Node\Stmt> $nodes */
+    private function constructorParameterDefault(array $nodes, string $className, string $parameter): ?Node\Expr
+    {
+        $class = $this->namedClass($nodes, $className);
+        $method = $class?->getMethod('__construct');
+        if (!$method instanceof Node\Stmt\ClassMethod) {
+            return null;
+        }
+
+        foreach ($method->params as $param) {
+            if ($param->var instanceof Node\Expr\Variable && $param->var->name === $parameter) {
+                return $param->default;
+            }
+        }
+
+        return null;
+    }
+
+    /** @param array<string, mixed> $variables */
+    private function enumValue(Node\Expr\PropertyFetch $expr, array $variables): string
+    {
+        if (
+            !$expr->name instanceof Node\Identifier
+            || $expr->name->toString() !== 'value'
+            || !$expr->var instanceof Node\Expr\ClassConstFetch
+            || !$expr->var->name instanceof Node\Identifier
+        ) {
+            throw new RuntimeException('Installed routing contract contains an unsupported property expression.');
+        }
+
+        $methods = $variables['__http_methods'] ?? null;
+        $case = $expr->var->name->toString();
+        if (!is_array($methods) || !isset($methods[$case]) || !is_string($methods[$case])) {
+            throw new RuntimeException('Installed routing contract references an unknown HTTP method.');
+        }
+
+        return $methods[$case];
+    }
+
+    /** @param array<string, mixed> $variables */
+    private function literal(Node\Expr $expr, array $variables, int $depth = 0): mixed
+    {
+        if ($depth > self::MAX_DEPTH) {
+            throw new RuntimeException('Installed routing contract literal nesting limit exceeded.');
+        }
+
+        return match (true) {
+            $expr instanceof Node\Scalar\String_ => $this->string($expr->value),
+            $expr instanceof Node\Scalar\Int_ => $expr->value,
+            $expr instanceof Node\Scalar\Float_ => $expr->value,
+            $expr instanceof Node\Expr\Array_ => $this->literalArray($expr, $variables, $depth + 1),
+            $expr instanceof Node\Expr\ConstFetch => $this->literalConst($expr),
+            $expr instanceof Node\Expr\Variable && is_string($expr->name) => $variables[$expr->name] ?? throw new RuntimeException('Installed routing contract contains an unsupported variable expression.'),
+            $expr instanceof Node\Expr\BinaryOp\Concat => $this->literalConcat($expr, $variables, $depth + 1),
+            $expr instanceof Node\Expr\BinaryOp\NotIdentical => $this->literal($expr->left, $variables, $depth + 1) !== $this->literal($expr->right, $variables, $depth + 1),
+            $expr instanceof Node\Expr\PropertyFetch => $this->enumValue($expr, $variables),
+            default => throw new RuntimeException('Installed routing contract contains a non-literal expression.'),
+        };
+    }
+
+    /** @param array<string, mixed> $variables @return array<array-key, mixed> */
+    private function literalArray(Node\Expr\Array_ $array, array $variables, int $depth): array
+    {
+        if (count($array->items) > self::MAX_ARRAY_ITEMS) {
+            throw new RuntimeException('Installed routing contract array item limit exceeded.');
+        }
+
+        $result = [];
+
+        foreach ($array->items as $item) {
+            if (!$item instanceof Node\Expr\ArrayItem || $item->unpack) {
+                throw new RuntimeException('Installed routing contract contains unsupported array syntax.');
+            }
+
+            $value = $this->literal($item->value, $variables, $depth);
+            if ($item->key === null) {
+                $result[] = $value;
+
+                continue;
+            }
+
+            $key = $this->literal($item->key, $variables, $depth);
+            if (!is_int($key) && !is_string($key)) {
+                throw new RuntimeException('Installed routing contract contains an invalid array key.');
+            }
+            $result[$key] = $value;
+        }
+
+        return $result;
+    }
+
+    /** @param array<string, mixed> $variables */
+    private function literalConcat(Node\Expr\BinaryOp\Concat $expr, array $variables, int $depth): string
+    {
+        $left = $this->literal($expr->left, $variables, $depth);
+        $right = $this->literal($expr->right, $variables, $depth);
+
+        if (!is_string($left) || !is_string($right)) {
+            throw new RuntimeException('Installed routing contract concatenation must use strings.');
+        }
+
+        return $this->string($left . $right);
+    }
+
+    private function literalConst(Node\Expr\ConstFetch $expr): ?bool
+    {
+        return match (strtolower($expr->name->toString())) {
+            'true' => true,
+            'false' => false,
+            'null' => null,
+            default => throw new RuntimeException('Installed routing contract contains an unsupported constant expression.'),
+        };
+    }
+
+    /** @param list<Node\Stmt> $nodes */
+    private function methodReturnExpression(array $nodes, string $className, string $methodName): ?Node\Expr
+    {
+        $method = $this->namedClass($nodes, $className)?->getMethod($methodName);
+        foreach ($method?->stmts ?? [] as $statement) {
+            if ($statement instanceof Node\Stmt\Return_ && $statement->expr instanceof Node\Expr) {
+                return $statement->expr;
+            }
+        }
+
+        return null;
+    }
+
+    /** @param list<Node\Stmt> $nodes */
+    private function namedClass(array $nodes, string $name): ?Node\Stmt\Class_
+    {
+        foreach ($this->statements($nodes) as $node) {
+            if ($node instanceof Node\Stmt\Class_ && $node->name?->toString() === $name) {
+                return $node;
+            }
+        }
+
+        return null;
+    }
+
+    /** @param list<Node\Stmt> $nodes */
+    private function namedEnum(array $nodes, string $name): ?Node\Stmt\Enum_
+    {
+        foreach ($this->statements($nodes) as $node) {
+            if ($node instanceof Node\Stmt\Enum_ && $node->name?->toString() === $name) {
+                return $node;
+            }
+        }
+
+        return null;
+    }
+
+    private function normalizeHttpMethod(string $statement): string
+    {
+        $value = strtoupper($statement);
+        if ($value === '' || preg_match('~^[A-Z]+$~D', $value) !== 1) {
+            throw new RuntimeException('Installed Webrick HTTP-method contract is invalid.');
+        }
+
+        return $value;
+    }
+
+    /** @return list<array{method:string,suffix:string,action:string,key:string,nameable:bool}> */
+    private function normalizeResourceSpec(mixed $value): array
+    {
+        if (!is_array($value) || count($value) > 32) {
+            throw new RuntimeException('Installed Webrick resource-route contract is invalid.');
+        }
+
+        $spec = [];
+        foreach ($value as $row) {
+            if (
+                !is_array($row)
+                || count($row) !== 5
+                || !is_string($row[0] ?? null)
+                || !is_string($row[1] ?? null)
+                || !is_string($row[2] ?? null)
+                || !is_string($row[3] ?? null)
+                || !is_bool($row[4] ?? null)
+                || strlen($row[0]) > 32
+                || strlen($row[1]) > self::MAX_STRING_BYTES
+                || strlen($row[2]) > 128
+                || strlen($row[3]) > 128
+            ) {
+                throw new RuntimeException('Installed Webrick resource-route contract is invalid.');
+            }
+
+            $spec[] = [
+                'method' => strtoupper($row[0]),
+                'suffix' => $row[1],
+                'action' => $row[2],
+                'key' => $row[3],
+                'nameable' => $row[4],
+            ];
+        }
+
+        return $spec;
+    }
+
+    /** @param array<array-key,mixed> $value @return list<string> */
+    private function normalizeRouteFiles(array $value): array
+    {
+        $files = [];
+        foreach ($value as $file) {
+            if (!is_string($file) || preg_match('~^[A-Za-z0-9_.-]+\.php$~D', $file) !== 1) {
+                throw new RuntimeException('Installed Foundation route-file contract is invalid.');
+            }
+            $files[] = $file;
+        }
+
+        $files = array_values(array_unique($files));
+        if ($files === [] || count($files) > 32) {
+            throw new RuntimeException('Installed Foundation route-file contract is invalid.');
+        }
+
+        return $files;
+    }
+
+    /** @return list<Node\Stmt> */
+    private function parsePackageFile(string $package, string $relative): array
+    {
+        $installed = $this->composer->package($package);
+        if ($installed?->installPath === null) {
+            throw new RuntimeException(sprintf('Required routing package %s is not installed.', $package));
+        }
+
+        $paths = new PathPolicy($this->project->root, [$package => $installed->installPath]);
+        $path = $paths->packageFile($package, $relative);
+        $source = $this->read($path);
+
+        try {
+            $nodes = $this->parser->parse($source);
+        } catch (Error $error) {
+            throw new RuntimeException('Installed routing contract contains invalid PHP: ' . $error->getRawMessage(), 0, $error);
+        }
+
+        if (!is_array($nodes)) {
+            throw new RuntimeException('Installed routing contract parser returned no syntax tree.');
+        }
+
+        return $nodes;
+    }
+
+    private function read(string $path): string
+    {
+        $handle = fopen($path, 'rb');
+        if ($handle === false) {
+            throw new RuntimeException('Installed routing contract could not be read safely.');
+        }
+
+        try {
+            $source = stream_get_contents($handle, self::MAX_SOURCE_BYTES + 1);
+        } finally {
+            fclose($handle);
+        }
+
+        if (!is_string($source) || str_contains($source, "\0")) {
+            throw new RuntimeException('Installed routing contract could not be read safely.');
+        }
+        if (strlen($source) > self::MAX_SOURCE_BYTES) {
+            throw new RuntimeException('Installed routing contract exceeds the 1 MiB read limit.');
+        }
+
+        return $source;
+    }
+
+    /** @param list<Node\Stmt> $nodes @return list<Node\Stmt> */
+    private function statements(array $nodes): array
+    {
+        $statements = [];
+        foreach ($nodes as $node) {
+            if ($node instanceof Node\Stmt\Namespace_) {
+                array_push($statements, ...$this->statements($node->stmts));
+
+                continue;
+            }
+            $statements[] = $node;
+        }
+
+        return $statements;
+    }
+
+    private function string(string $value): string
+    {
+        if (strlen($value) > self::MAX_STRING_BYTES) {
+            throw new RuntimeException('Installed routing contract literal string limit exceeded.');
+        }
+
+        return $value;
+    }
+}
