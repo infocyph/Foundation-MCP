@@ -254,7 +254,14 @@ final class RouteInspector
             return;
         }
 
-        $roots = SourceRoots::discover($this->project)->application;
+        try {
+            $roots = SourceRoots::discover($this->project)->application;
+        } catch (RuntimeException $error) {
+            $this->diagnostic('source_root_inspection_failed', null, null, $error->getMessage());
+
+            return;
+        }
+
         $scanner = new AttributeRouteScanner($this->values, $this->verbs);
         $count = 0;
 
@@ -273,8 +280,14 @@ final class RouteInspector
 
             try {
                 $nodes = $this->parse($this->paths->projectFile($relative), $relative);
-                if ($nodes !== null) {
-                    $this->appendRoutes($scanner->scan($nodes, $relative, $enabled !== true));
+                if ($nodes === null) {
+                    continue;
+                }
+                $this->appendRoutes($scanner->scan($nodes, $relative, $enabled !== true));
+                if ($scanner->truncated()) {
+                    $this->routeLimitDiagnostic();
+
+                    return;
                 }
             } catch (RuntimeException $error) {
                 $this->diagnostic('route_source_invalid', $relative, null, $error->getMessage());
@@ -382,7 +395,11 @@ final class RouteInspector
             fclose($handle);
         }
 
-        if (!is_string($source) || str_contains($source, "\0")) {
+        if (
+            !is_string($source)
+            || str_contains($source, "\0")
+            || preg_match('//u', $source) !== 1
+        ) {
             throw new RuntimeException('Route source could not be read safely.');
         }
         if (strlen($source) > self::MAX_SOURCE_BYTES) {
