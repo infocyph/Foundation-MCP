@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Infocyph\FoundationMcp\Foundation\Internal;
 
+use Infocyph\FoundationMcp\Analysis\Internal\PhpNodeBudgetVisitor;
 use Infocyph\FoundationMcp\Composer\ComposerInspector;
 use Infocyph\FoundationMcp\Project\Project;
 use Infocyph\FoundationMcp\Security\PathPolicy;
@@ -17,6 +18,8 @@ use RuntimeException;
 /** @phpstan-type Diagnostic array{code:string,source:?string,line:?int,message:string} */
 final class InstalledScheduleContract
 {
+    private const int MAX_DIAGNOSTICS = 50;
+
     private const int MAX_SOURCE_BYTES = 1_048_576;
 
     /** @var list<Diagnostic> */
@@ -68,12 +71,20 @@ final class InstalledScheduleContract
 
     private function diagnostic(string $code, ?string $source, ?int $line, string $message): void
     {
-        $this->diagnostics[] = [
+        if (count($this->diagnostics) >= self::MAX_DIAGNOSTICS) {
+            return;
+        }
+
+        $entry = [
             'code' => $code,
             'source' => $source,
             'line' => $line,
             'message' => $message,
         ];
+
+        if (!in_array($entry, $this->diagnostics, true)) {
+            $this->diagnostics[] = $entry;
+        }
     }
 
     /** @param list<Node\Stmt> $nodes @return array<string,true> */
@@ -96,15 +107,26 @@ final class InstalledScheduleContract
     /** @return list<Node\Stmt>|null */
     private function parse(string $path, string $source): ?array
     {
-        $size = filesize($path);
-        if ($size === false || $size > self::MAX_SOURCE_BYTES) {
-            $this->diagnostic('source_too_large', $source, null, sprintf('Schedule contract source exceeds %d bytes.', self::MAX_SOURCE_BYTES));
+        $handle = fopen($path, 'rb');
+        if ($handle === false) {
+            $this->diagnostic('source_unreadable', $source, null, 'Schedule contract source is unreadable.');
 
             return null;
         }
-        $contents = file_get_contents($path);
+
+        try {
+            $contents = stream_get_contents($handle, self::MAX_SOURCE_BYTES + 1);
+        } finally {
+            fclose($handle);
+        }
+
         if (!is_string($contents) || str_contains($contents, "\0")) {
             $this->diagnostic('source_unreadable', $source, null, 'Schedule contract source is unreadable or binary.');
+
+            return null;
+        }
+        if (strlen($contents) > self::MAX_SOURCE_BYTES) {
+            $this->diagnostic('source_too_large', $source, null, sprintf('Schedule contract source exceeds %d bytes.', self::MAX_SOURCE_BYTES));
 
             return null;
         }
@@ -118,8 +140,15 @@ final class InstalledScheduleContract
         }
         $traverser = new NodeTraverser();
         $traverser->addVisitor(new NameResolver(null, ['preserveOriginalNames' => true, 'replaceNodes' => false]));
+        $traverser->addVisitor(new PhpNodeBudgetVisitor());
 
-        return $traverser->traverse($nodes);
+        try {
+            return $traverser->traverse($nodes);
+        } catch (RuntimeException $error) {
+            $this->diagnostic('source_too_complex', $source, null, $error->getMessage());
+
+            return null;
+        }
     }
 
     /** @param list<Node\Stmt> $nodes */
