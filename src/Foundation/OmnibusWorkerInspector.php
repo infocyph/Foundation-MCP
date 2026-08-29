@@ -237,6 +237,7 @@ final class OmnibusWorkerInspector
 
         $traverser = new NodeTraverser();
         $traverser->addVisitor(new PhpNodeBudgetVisitor());
+
         try {
             /** @var list<Node\Stmt> $nodes */
             $nodes = $traverser->traverse($nodes);

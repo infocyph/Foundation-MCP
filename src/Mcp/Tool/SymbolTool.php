@@ -6,10 +6,6 @@ namespace Infocyph\FoundationMcp\Mcp\Tool;
 
 final readonly class SymbolTool
 {
-    private const int MAX_CANDIDATES = 20;
-
-    private const int MAX_DIAGNOSTICS = 50;
-
     public const string DESCRIPTION = 'Resolve a PHP symbol to its exact declaration, signature, source, ownership, and structural relationships in the project or one explicit installed package.';
 
     public const array INPUT_SCHEMA = [
@@ -23,6 +19,10 @@ final readonly class SymbolTool
     ];
 
     public const string NAME = 'foundation_symbol';
+
+    private const int MAX_CANDIDATES = 20;
+
+    private const int MAX_DIAGNOSTICS = 50;
 
     public function __construct(
         private ToolServices $services,

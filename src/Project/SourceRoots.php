@@ -59,6 +59,18 @@ final readonly class SourceRoots
         return self::unique([...$this->application, ...$this->tests, ...$this->structural]);
     }
 
+    /** @param list<string> $roots */
+    private static function appendRoot(array &$roots, string $candidate, PathPolicy $paths): void
+    {
+        try {
+            $resolved = $paths->projectPath($candidate);
+        } catch (RuntimeException) {
+            return;
+        }
+
+        $roots[] = is_dir($resolved) ? $resolved : dirname($resolved);
+    }
+
     /**
      * @return list<string>
      */
@@ -114,18 +126,6 @@ final readonly class SourceRoots
         }
 
         return self::unique($roots);
-    }
-
-    /** @param list<string> $roots */
-    private static function appendRoot(array &$roots, string $candidate, PathPolicy $paths): void
-    {
-        try {
-            $resolved = $paths->projectPath($candidate);
-        } catch (RuntimeException) {
-            return;
-        }
-
-        $roots[] = is_dir($resolved) ? $resolved : dirname($resolved);
     }
 
     /**

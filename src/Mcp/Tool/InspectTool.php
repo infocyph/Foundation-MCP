@@ -10,12 +10,6 @@ use Throwable;
 
 final readonly class InspectTool
 {
-    private const int MAX_AUTOLOAD_DEPTH = 16;
-
-    private const int MAX_AUTOLOAD_ITEMS = 1_024;
-
-    private const int MAX_STRING_BYTES = 2_048;
-
     public const string DESCRIPTION = 'Inspect one Foundation structural concern: architecture, modules, routes, commands, providers, config, workers, schedules, runtime/bootstrap, or Composer autoload roots.';
 
     public const array INPUT_SCHEMA = [
@@ -31,6 +25,12 @@ final readonly class InspectTool
     ];
 
     public const string NAME = 'foundation_inspect';
+
+    private const int MAX_AUTOLOAD_DEPTH = 16;
+
+    private const int MAX_AUTOLOAD_ITEMS = 1_024;
+
+    private const int MAX_STRING_BYTES = 2_048;
 
     public function __construct(
         private ToolServices $services,

@@ -417,6 +417,7 @@ function measureWorkload(
 
     for ($index = 0; $index < $repetitions; ++$index) {
         $start = hrtime(true);
+
         try {
             $operation();
             ++$successful;

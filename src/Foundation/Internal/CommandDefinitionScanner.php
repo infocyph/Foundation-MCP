@@ -136,6 +136,15 @@ final readonly class CommandDefinitionScanner
         };
     }
 
+    private function boundedString(string $value): ?string
+    {
+        if (preg_match('//u', $value) !== 1 || strlen($value) > self::MAX_STRING_BYTES) {
+            return null;
+        }
+
+        return $value;
+    }
+
     /**
      * @return list<array{0:string,1:list<Node\Arg>}>|null
      */
@@ -352,15 +361,6 @@ final readonly class CommandDefinitionScanner
         }
 
         return $expr instanceof Node\Scalar\String_ ? $this->boundedString($expr->value) : null;
-    }
-
-    private function boundedString(string $value): ?string
-    {
-        if (preg_match('//u', $value) !== 1 || strlen($value) > self::MAX_STRING_BYTES) {
-            return null;
-        }
-
-        return $value;
     }
 
     /** @param list<string> $values @return list<string> */

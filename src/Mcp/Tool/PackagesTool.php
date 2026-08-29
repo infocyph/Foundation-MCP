@@ -10,16 +10,6 @@ use Throwable;
 
 final readonly class PackagesTool
 {
-    private const int MAX_DIAGNOSTICS = 100;
-
-    private const int MAX_MAP_ITEMS = 100;
-
-    private const int MAX_METADATA_DEPTH = 5;
-
-    private const int MAX_METADATA_ITEMS = 1_000;
-
-    private const int MAX_STRING_BYTES = 2_048;
-
     public const string DESCRIPTION = 'Inspect bounded Composer package, dependency, exact locked/installed version, source-reference, direct-scope, and Foundation module ownership information.';
 
     public const array INPUT_SCHEMA = [
@@ -33,6 +23,16 @@ final readonly class PackagesTool
     ];
 
     public const string NAME = 'foundation_packages';
+
+    private const int MAX_DIAGNOSTICS = 100;
+
+    private const int MAX_MAP_ITEMS = 100;
+
+    private const int MAX_METADATA_DEPTH = 5;
+
+    private const int MAX_METADATA_ITEMS = 1_000;
+
+    private const int MAX_STRING_BYTES = 2_048;
 
     public function __construct(
         private ToolServices $services,

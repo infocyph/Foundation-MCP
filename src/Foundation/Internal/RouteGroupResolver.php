@@ -149,6 +149,14 @@ final readonly class RouteGroupResolver
         ];
     }
 
+    /** @param array<int|string,Node\Arg> $args */
+    private function closureArg(array $args, int $position, string $name): ?Node\Expr\Closure
+    {
+        $value = $this->values->arg($args, $position, $name);
+
+        return $value instanceof Node\Expr\Closure ? $value : null;
+    }
+
     private function combineStrings(?string $left, ?string $right): ?string
     {
         if ($left === null || $right === null) {
@@ -158,14 +166,6 @@ final readonly class RouteGroupResolver
         $value = $left . $right;
 
         return strlen($value) <= self::MAX_STRING_BYTES ? $value : null;
-    }
-
-    /** @param array<int|string,Node\Arg> $args */
-    private function closureArg(array $args, int $position, string $name): ?Node\Expr\Closure
-    {
-        $value = $this->values->arg($args, $position, $name);
-
-        return $value instanceof Node\Expr\Closure ? $value : null;
     }
 
     /** @return array{0:?string,1:bool} */

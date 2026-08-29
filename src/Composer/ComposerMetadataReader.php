@@ -423,26 +423,6 @@ final class ComposerMetadataReader
         return $this->lock = $lock;
     }
 
-    /** @param array<string, mixed> $composer @return array<string, mixed> */
-    private function rememberPackageComposer(string $installPath, array $composer): array
-    {
-        if (!array_key_exists($installPath, $this->packageComposer)) {
-            if (count($this->packageComposerOrder) >= self::MAX_PACKAGE_CACHE_ENTRIES) {
-                $oldest = array_shift($this->packageComposerOrder);
-
-                if (is_string($oldest)) {
-                    unset($this->packageComposer[$oldest]);
-                }
-            }
-
-            $this->packageComposerOrder[] = $installPath;
-        }
-
-        $this->packageComposer[$installPath] = $composer;
-
-        return $composer;
-    }
-
     private function readJsonSource(string $path, string $label): string
     {
         $handle = fopen($path, 'rb');
@@ -466,6 +446,26 @@ final class ComposerMetadataReader
         }
 
         return $content;
+    }
+
+    /** @param array<string, mixed> $composer @return array<string, mixed> */
+    private function rememberPackageComposer(string $installPath, array $composer): array
+    {
+        if (!array_key_exists($installPath, $this->packageComposer)) {
+            if (count($this->packageComposerOrder) >= self::MAX_PACKAGE_CACHE_ENTRIES) {
+                $oldest = array_shift($this->packageComposerOrder);
+
+                if (is_string($oldest)) {
+                    unset($this->packageComposer[$oldest]);
+                }
+            }
+
+            $this->packageComposerOrder[] = $installPath;
+        }
+
+        $this->packageComposer[$installPath] = $composer;
+
+        return $composer;
     }
 
     private function runtimeMatchesProject(): bool
