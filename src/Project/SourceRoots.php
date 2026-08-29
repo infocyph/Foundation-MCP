@@ -9,6 +9,8 @@ use RuntimeException;
 
 final readonly class SourceRoots
 {
+    private const int MAX_AUTOLOAD_PATHS = 1_024;
+
     private const array STRUCTURAL_DIRECTORIES = ['bootstrap', 'config', 'routes', 'database', 'docs'];
 
     /**
@@ -66,7 +68,8 @@ final readonly class SourceRoots
             return [];
         }
 
-        $candidates = [];
+        $roots = [];
+        $seen = 0;
 
         foreach (['psr-4', 'psr-0'] as $key) {
             $mapping = $autoload[$key] ?? [];
@@ -77,9 +80,17 @@ final readonly class SourceRoots
 
             foreach ($mapping as $path) {
                 foreach ((array) $path as $candidate) {
-                    if (is_string($candidate)) {
-                        $candidates[] = $candidate;
+                    if (!is_string($candidate)) {
+                        continue;
                     }
+                    if (++$seen > self::MAX_AUTOLOAD_PATHS) {
+                        throw new RuntimeException(sprintf(
+                            'Composer autoload source-root discovery exceeds the %d-path limit.',
+                            self::MAX_AUTOLOAD_PATHS,
+                        ));
+                    }
+
+                    self::appendRoot($roots, $candidate, $paths);
                 }
             }
         }
@@ -88,25 +99,33 @@ final readonly class SourceRoots
 
         if (is_array($classmap)) {
             foreach ($classmap as $candidate) {
-                if (is_string($candidate)) {
-                    $candidates[] = $candidate;
+                if (!is_string($candidate)) {
+                    continue;
                 }
+                if (++$seen > self::MAX_AUTOLOAD_PATHS) {
+                    throw new RuntimeException(sprintf(
+                        'Composer autoload source-root discovery exceeds the %d-path limit.',
+                        self::MAX_AUTOLOAD_PATHS,
+                    ));
+                }
+
+                self::appendRoot($roots, $candidate, $paths);
             }
-        }
-
-        $roots = [];
-
-        foreach ($candidates as $candidate) {
-            try {
-                $resolved = $paths->projectPath($candidate);
-            } catch (RuntimeException) {
-                continue;
-            }
-
-            $roots[] = is_dir($resolved) ? $resolved : dirname($resolved);
         }
 
         return self::unique($roots);
+    }
+
+    /** @param list<string> $roots */
+    private static function appendRoot(array &$roots, string $candidate, PathPolicy $paths): void
+    {
+        try {
+            $resolved = $paths->projectPath($candidate);
+        } catch (RuntimeException) {
+            return;
+        }
+
+        $roots[] = is_dir($resolved) ? $resolved : dirname($resolved);
     }
 
     /**
