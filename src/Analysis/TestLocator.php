@@ -232,24 +232,17 @@ final readonly class TestLocator
         $scanned = 0;
 
         foreach ($testFiles as $path => $absolute) {
-            $size = filesize($absolute);
+            $remaining = self::MAX_LEXICAL_SCAN_BYTES - $scanned;
+            if ($remaining <= 0) {
+                break;
+            }
 
-            if ($size === false || $size > self::MAX_LEXICAL_FILE_BYTES || ($scanned + $size) > self::MAX_LEXICAL_SCAN_BYTES) {
+            $content = $this->readLexicalFile($absolute, min(self::MAX_LEXICAL_FILE_BYTES, $remaining));
+            if ($content === null) {
                 continue;
             }
 
-            $scanned += $size;
-            $content = file_get_contents($absolute);
-
-            if (
-                $content === false
-                || strlen($content) > self::MAX_LEXICAL_FILE_BYTES
-                || str_contains($content, "\0")
-                || preg_match('//u', $content) !== 1
-            ) {
-                continue;
-            }
-
+            $scanned += strlen($content);
             $lower = strtolower($content);
 
             foreach ($needles as $needle) {
@@ -349,6 +342,35 @@ final readonly class TestLocator
                 }
             }
         }
+    }
+
+    private function readLexicalFile(string $path, int $limit): ?string
+    {
+        if ($limit < 1) {
+            return null;
+        }
+
+        $handle = fopen($path, 'rb');
+        if ($handle === false) {
+            return null;
+        }
+
+        try {
+            $content = stream_get_contents($handle, $limit + 1);
+        } finally {
+            fclose($handle);
+        }
+
+        if (
+            !is_string($content)
+            || strlen($content) > $limit
+            || str_contains($content, "\0")
+            || preg_match('//u', $content) !== 1
+        ) {
+            return null;
+        }
+
+        return $content;
     }
 
     /**
