@@ -20,7 +20,12 @@ final class PhpNodeBudgetVisitor extends NodeVisitorAbstract
         ++$this->visited;
 
         if ($this->visited > self::MAX_NODES) {
-            throw new RuntimeException('PHP syntax tree exceeds the 200,000-node analysis limit.');
+            throw new RuntimeException(sprintf(
+                'PHP syntax tree exceeds the %d-node analysis limit near %s on line %d.',
+                self::MAX_NODES,
+                $node::class,
+                $node->getStartLine(),
+            ));
         }
 
         return null;
