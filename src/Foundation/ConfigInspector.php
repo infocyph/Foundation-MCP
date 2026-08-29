@@ -26,9 +26,13 @@ final class ConfigInspector
 {
     private const int MAX_DIAGNOSTICS = 100;
 
+    private const int MAX_DIRECTORY_ENTRIES = 4_096;
+
     private const int MAX_ENTRIES = 3_000;
 
     private const int MAX_FILES = 256;
+
+    private const int MAX_TRAVERSAL_DEPTH = 64;
 
     private readonly ConfigEntryExtractor $extractor;
 
@@ -95,13 +99,32 @@ final class ConfigInspector
             'entries' => $entries,
             'environment_variables' => array_keys($environment),
             'referenced_classes' => array_keys($classes),
-            'diagnostics' => [...$this->diagnostics, ...$this->extractor->diagnostics()],
+            'diagnostics' => $this->allDiagnostics(),
         ];
     }
 
     private function absolute(string $path): bool
     {
         return preg_match('/^(?:[A-Z]:[\\\\\/]|\\\\\\\\|\/)/i', $path) === 1;
+    }
+
+    /** @return list<Diagnostic> */
+    private function allDiagnostics(): array
+    {
+        $diagnostics = [...$this->diagnostics, ...$this->extractor->diagnostics()];
+        if (count($diagnostics) <= self::MAX_DIAGNOSTICS) {
+            return $diagnostics;
+        }
+
+        return [
+            ...array_slice($diagnostics, 0, self::MAX_DIAGNOSTICS - 1),
+            [
+                'code' => 'diagnostic_limit_exceeded',
+                'source' => null,
+                'line' => null,
+                'message' => sprintf('Config diagnostics are limited to %d entries.', self::MAX_DIAGNOSTICS),
+            ],
+        ];
     }
 
     /** @param list<ConfigEntry> $target @param list<ConfigEntry> $items */
@@ -175,8 +198,19 @@ final class ConfigInspector
     }
 
     /** @param list<string> $classes */
-    private function collectAllCalls(Node $node, array &$classes): void
+    private function collectAllCalls(Node $node, array &$classes, int $depth = 0): void
     {
+        if ($depth >= self::MAX_TRAVERSAL_DEPTH) {
+            $this->diagnosticOnce(
+                'inspection_limit_exceeded',
+                'infocyph/foundation:src/Config/ConfigLoader.php',
+                $node->getStartLine(),
+                sprintf('Foundation config-default traversal exceeds %d levels.', self::MAX_TRAVERSAL_DEPTH),
+            );
+
+            return;
+        }
+
         if ($node instanceof Node\Expr\StaticCall
             && $node->class instanceof Node\Name
             && $node->name instanceof Node\Identifier
@@ -186,11 +220,11 @@ final class ConfigInspector
         foreach ($node->getSubNodeNames() as $name) {
             $value = $node->{$name};
             if ($value instanceof Node) {
-                $this->collectAllCalls($value, $classes);
+                $this->collectAllCalls($value, $classes, $depth + 1);
             } elseif (is_array($value)) {
                 foreach ($value as $child) {
                     if ($child instanceof Node) {
-                        $this->collectAllCalls($child, $classes);
+                        $this->collectAllCalls($child, $classes, $depth + 1);
                     }
                 }
             }
@@ -250,6 +284,17 @@ final class ConfigInspector
                 'message' => $message,
             ];
         }
+    }
+
+    private function diagnosticOnce(string $code, ?string $source, ?int $line, string $message): void
+    {
+        foreach ($this->diagnostics as $diagnostic) {
+            if ($diagnostic['code'] === $code && $diagnostic['source'] === $source) {
+                return;
+            }
+        }
+
+        $this->diagnostic($code, $source, $line, $message);
     }
 
     /** @return list<ConfigEntry> */
@@ -387,7 +432,36 @@ final class ConfigInspector
             return [];
         }
 
-        $files = glob(rtrim($root, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . '*.php') ?: [];
+        try {
+            $iterator = new \FilesystemIterator($root, \FilesystemIterator::SKIP_DOTS);
+        } catch (\UnexpectedValueException $error) {
+            $this->diagnostic('config_source_invalid', $directory, null, $error->getMessage());
+
+            return [];
+        }
+
+        $files = [];
+        $scanned = 0;
+        foreach ($iterator as $entry) {
+            if (++$scanned > self::MAX_DIRECTORY_ENTRIES) {
+                $this->diagnostic(
+                    'inspection_limit_exceeded',
+                    $directory,
+                    null,
+                    sprintf('Config directory inspection is limited to %d entries.', self::MAX_DIRECTORY_ENTRIES),
+                );
+
+                return [];
+            }
+            if (!$entry->isFile()) {
+                continue;
+            }
+            $filename = $entry->getFilename();
+            if (str_ends_with($filename, '.php')) {
+                $files[] = $filename;
+            }
+        }
+
         sort($files, SORT_STRING);
         if (count($files) > self::MAX_FILES) {
             $files = array_slice($files, 0, self::MAX_FILES);
@@ -395,12 +469,12 @@ final class ConfigInspector
         }
 
         $entries = [];
-        foreach ($files as $file) {
-            $namespace = pathinfo($file, PATHINFO_FILENAME);
+        foreach ($files as $filename) {
+            $namespace = pathinfo($filename, PATHINFO_FILENAME);
             if ($namespace === '' || str_starts_with($namespace, '_')) {
                 continue;
             }
-            $relative = trim($directory, '/') . '/' . basename($file);
+            $relative = trim($directory, '/') . '/' . $filename;
 
             try {
                 $path = $this->paths->projectFile($relative);
