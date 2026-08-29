@@ -10,6 +10,16 @@ use Throwable;
 
 final readonly class PackagesTool
 {
+    private const int MAX_DIAGNOSTICS = 100;
+
+    private const int MAX_MAP_ITEMS = 100;
+
+    private const int MAX_METADATA_DEPTH = 5;
+
+    private const int MAX_METADATA_ITEMS = 1_000;
+
+    private const int MAX_STRING_BYTES = 2_048;
+
     public const string DESCRIPTION = 'Inspect bounded Composer package, dependency, exact locked/installed version, source-reference, direct-scope, and Foundation module ownership information.';
 
     public const array INPUT_SCHEMA = [
@@ -41,23 +51,29 @@ final readonly class PackagesTool
         $composer = $this->services->composer();
         $graph = $composer->graph();
         $package = trim((string) $package);
+        $diagnostics = $composer->diagnostics();
 
         if ($package !== '') {
             $installed = $composer->package($package);
+            $dependencies = $graph->dependencies($package, $depth);
+            $dependents = $graph->dependents($package);
 
             return [
                 'mode' => 'package',
                 'package' => $installed === null ? null : $this->full($installed),
                 'status' => $installed === null ? 'not_found' : 'resolved',
-                'dependencies' => array_slice($graph->dependencies($package, $depth), 0, $limit),
-                'dependents' => array_slice($graph->dependents($package), 0, $limit),
-                'modules' => $this->modulesForPackage($package),
-                'diagnostics' => array_slice($composer->diagnostics(), 0, 100),
+                'dependencies' => array_slice($dependencies, 0, $limit),
+                'dependencies_truncated' => count($dependencies) > $limit,
+                'dependents' => array_slice($dependents, 0, $limit),
+                'dependents_truncated' => count($dependents) > $limit,
+                'modules' => $this->modulesForPackage($package, $diagnostics),
+                'diagnostics' => $this->boundedDiagnostics($diagnostics),
             ];
         }
 
+        $allPackages = $composer->packages();
         $packages = [];
-        foreach ($composer->packages() as $installed) {
+        foreach ($allPackages as $installed) {
             $packages[] = $this->compact($installed);
             if (count($packages) >= $limit) {
                 break;
@@ -68,49 +84,88 @@ final readonly class PackagesTool
             'mode' => 'overview',
             'runtime_direct' => $graph->runtimeDirect(),
             'dev_direct' => $graph->devDirect(),
-            'package_count' => count($composer->packages()),
+            'package_count' => count($allPackages),
             'returned' => count($packages),
-            'truncated' => count($composer->packages()) > count($packages),
+            'truncated' => count($allPackages) > count($packages),
             'packages' => $packages,
-            'modules' => $this->moduleOverview(),
-            'diagnostics' => array_slice($composer->diagnostics(), 0, 100),
+            'modules' => $this->moduleOverview($diagnostics),
+            'diagnostics' => $this->boundedDiagnostics($diagnostics),
         ];
     }
 
-    /** @param array<string,string> $map @return array<string,string> */
+    /** @param list<array<string,mixed>> $diagnostics @return list<array<string,mixed>> */
+    private function boundedDiagnostics(array $diagnostics): array
+    {
+        if (count($diagnostics) <= self::MAX_DIAGNOSTICS) {
+            return $diagnostics;
+        }
+
+        return [
+            ...array_slice($diagnostics, 0, self::MAX_DIAGNOSTICS - 1),
+            [
+                'code' => 'diagnostic_limit_exceeded',
+                'message' => sprintf('Package diagnostics are limited to %d entries.', self::MAX_DIAGNOSTICS),
+            ],
+        ];
+    }
+
+    /** @param array<string,string> $map @return array{0:array<string,string>,1:bool} */
     private function boundedMap(array $map): array
     {
         ksort($map, SORT_STRING);
+        $truncated = count($map) > self::MAX_MAP_ITEMS;
 
-        return array_slice($map, 0, 100, true);
+        return [array_slice($map, 0, self::MAX_MAP_ITEMS, true), $truncated];
     }
 
-    private function boundedValue(mixed $value, int $depth = 0): mixed
+    /** @return array{0:mixed,1:bool} */
+    private function boundedValue(mixed $value): array
     {
-        if ($depth >= 5) {
-            return is_array($value) ? '[TRUNCATED]' : $value;
+        $remaining = self::MAX_METADATA_ITEMS;
+        $truncated = false;
+        $value = $this->boundedValueRecursive($value, $remaining, $truncated);
+
+        return [$value, $truncated];
+    }
+
+    private function boundedValueRecursive(mixed $value, int &$remaining, bool &$truncated, int $depth = 0): mixed
+    {
+        if ($depth >= self::MAX_METADATA_DEPTH) {
+            if (is_array($value)) {
+                $truncated = true;
+
+                return '[TRUNCATED]';
+            }
+
+            return $value;
         }
         if (is_string($value)) {
             $path = str_replace('\\', '/', $value);
             if (str_starts_with($path, '/') || str_starts_with($path, '//') || preg_match('/^[A-Za-z]:\//', $path) === 1 || in_array('..', explode('/', $path), true)) {
                 return '[DENIED_PATH]';
             }
+            if (strlen($value) <= self::MAX_STRING_BYTES) {
+                return $value;
+            }
 
-            return strlen($value) > 2_048 ? substr($value, 0, 2_048) . '…' : $value;
+            $truncated = true;
+
+            return $this->truncateUtf8($value, self::MAX_STRING_BYTES) . '…';
         }
         if (!is_array($value)) {
             return $value;
         }
 
         $result = [];
-        $count = 0;
         foreach ($value as $key => $item) {
-            if (++$count > 100) {
+            if ($remaining <= 0) {
+                $truncated = true;
                 $result['__truncated__'] = true;
 
                 break;
             }
-            $result[$key] = $this->boundedValue($item, $depth + 1);
+            --$remaining;
+            $result[$key] = $this->boundedValueRecursive($item, $remaining, $truncated, $depth + 1);
         }
 
         return $result;
@@ -137,19 +192,32 @@ final readonly class PackagesTool
     /** @return array<string,mixed> */
     private function full(InstalledPackage $package): array
     {
+        [$require, $requireTruncated] = $this->boundedMap($package->require);
+        [$autoload, $autoloadTruncated] = $this->boundedValue($package->autoload);
+        [$suggest, $suggestTruncated] = $this->boundedMap($package->suggest);
+        [$provide, $provideTruncated] = $this->boundedMap($package->provide);
+        [$replace, $replaceTruncated] = $this->boundedMap($package->replace);
+        [$conflict, $conflictTruncated] = $this->boundedMap($package->conflict);
+
         return [
             ...$this->compact($package),
-            'require' => $this->boundedMap($package->require),
-            'autoload' => $this->boundedValue($package->autoload),
-            'suggest' => $this->boundedMap($package->suggest),
-            'provide' => $this->boundedMap($package->provide),
-            'replace' => $this->boundedMap($package->replace),
-            'conflict' => $this->boundedMap($package->conflict),
+            'require' => $require,
+            'require_truncated' => $requireTruncated,
+            'autoload' => $autoload,
+            'autoload_truncated' => $autoloadTruncated,
+            'suggest' => $suggest,
+            'suggest_truncated' => $suggestTruncated,
+            'provide' => $provide,
+            'provide_truncated' => $provideTruncated,
+            'replace' => $replace,
+            'replace_truncated' => $replaceTruncated,
+            'conflict' => $conflict,
+            'conflict_truncated' => $conflictTruncated,
         ];
     }
 
-    /** @return list<array{name:string,packages:list<string>,built_in:bool}> */
-    private function moduleOverview(): array
+    /** @param list<array<string,mixed>> $diagnostics @return list<array{name:string,packages:list<string>,built_in:bool}> */
+    private function moduleOverview(array &$diagnostics): array
     {
         $modules = [];
 
@@ -163,15 +231,18 @@ final readonly class PackagesTool
                     'built_in' => $definition['built_in'],
                 ];
             }
-        } catch (Throwable) {
-            return [];
+        } catch (Throwable $error) {
+            $diagnostics[] = [
+                'code' => 'module_catalog_invalid',
+                'message' => $error->getMessage(),
+            ];
         }
 
         return $modules;
     }
 
-    /** @return list<array{name:string,constraint:string}> */
-    private function modulesForPackage(string $package): array
+    /** @param list<array<string,mixed>> $diagnostics @return list<array{name:string,constraint:string}> */
+    private function modulesForPackage(string $package, array &$diagnostics): array
     {
         $modules = [];
 
@@ -182,11 +253,24 @@ final readonly class PackagesTool
                 }
                 $modules[] = ['name' => $name, 'constraint' => $definition['packages'][$package]];
             }
-        } catch (Throwable) {
-            return [];
+        } catch (Throwable $error) {
+            $diagnostics[] = [
+                'code' => 'module_catalog_invalid',
+                'message' => $error->getMessage(),
+            ];
         }
         usort($modules, static fn(array $left, array $right): int => $left['name'] <=> $right['name']);
 
         return $modules;
+    }
+
+    private function truncateUtf8(string $value, int $bytes): string
+    {
+        $value = substr($value, 0, $bytes);
+        while ($value !== '' && preg_match('//u', $value) !== 1) {
+            $value = substr($value, 0, -1);
+        }
+
+        return $value;
     }
 }
