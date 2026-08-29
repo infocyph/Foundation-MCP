@@ -9,6 +9,12 @@ use RuntimeException;
 
 final readonly class RouteValueResolver
 {
+    private const int MAX_ARRAY_ITEMS = 256;
+
+    private const int MAX_DEPTH = 8;
+
+    private const int MAX_STRING_BYTES = 8_192;
+
     /** @param array<int|string, Node\Arg> $args */
     public function arg(array $args, int $position, string $name): ?Node\Expr
     {
@@ -46,7 +52,7 @@ final readonly class RouteValueResolver
             && $expr->name instanceof Node\Identifier
             && strtolower($expr->name->toString()) === 'class'
         ) {
-            return $this->resolvedName($expr->class);
+            return $this->boundedString($this->resolvedName($expr->class));
         }
 
         return $this->stringValue($expr);
@@ -63,7 +69,7 @@ final readonly class RouteValueResolver
                 ? $this->stringValue($items[1]->value)
                 : null;
 
-            return $class !== null && $method !== null ? $class . '::' . $method : null;
+            return $class !== null && $method !== null ? $this->boundedString($class . '::' . $method) : null;
         }
 
         if (
@@ -72,11 +78,11 @@ final readonly class RouteValueResolver
             && $expr->class instanceof Node\Name
             && $expr->name instanceof Node\Identifier
         ) {
-            return $this->resolvedName($expr->class) . '::' . $expr->name->toString();
+            return $this->boundedString($this->resolvedName($expr->class) . '::' . $expr->name->toString());
         }
 
         if ($expr instanceof Node\Expr\FuncCall && $expr->isFirstClassCallable() && $expr->name instanceof Node\Name) {
-            return $this->resolvedName($expr->name);
+            return $this->boundedString($this->resolvedName($expr->name));
         }
 
         if ($expr instanceof Node\Expr\Closure || $expr instanceof Node\Expr\ArrowFunction) {
@@ -92,7 +98,7 @@ final readonly class RouteValueResolver
             return null;
         }
 
-        return '/' . ltrim(trim($prefix, '/') . '/' . ltrim($path, '/'), '/');
+        return $this->boundedString('/' . ltrim(trim($prefix, '/') . '/' . ltrim($path, '/'), '/'));
     }
 
     /** @return array<array-key,mixed>|null */
@@ -131,7 +137,7 @@ final readonly class RouteValueResolver
 
     public function nullableString(mixed $value): ?string
     {
-        return $value === null || is_string($value) ? $value : null;
+        return $value === null || (is_string($value) && strlen($value) <= self::MAX_STRING_BYTES) ? $value : null;
     }
 
     public function nullableStringExpr(Node\Expr $expr): ?string
@@ -152,9 +158,7 @@ final readonly class RouteValueResolver
         return $resolved instanceof Node\Name ? $resolved->toString() : $name->toString();
     }
 
-    /**
-     * @return array{0:?string,1:list<string>,2:list<string>,3:array<string,mixed>,4:bool}
-     */
+    /** @return array{0:?string,1:list<string>,2:list<string>,3:array<string,mixed>,4:bool} */
     public function routeOptions(?Node\Expr $expr): array
     {
         if ($expr === null) {
@@ -184,13 +188,13 @@ final readonly class RouteValueResolver
     /** @return list<string>|null */
     public function stringList(mixed $value): ?array
     {
-        if ($value === null || !is_array($value)) {
+        if ($value === null || !is_array($value) || count($value) > self::MAX_ARRAY_ITEMS) {
             return null;
         }
 
         $list = [];
         foreach ($value as $item) {
-            if (!is_string($item) || $item === '') {
+            if (!is_string($item) || $item === '' || strlen($item) > self::MAX_STRING_BYTES) {
                 return null;
             }
             $list[] = $item;
@@ -202,13 +206,19 @@ final readonly class RouteValueResolver
     /** @return array<string,string> */
     public function stringMap(mixed $value): array
     {
-        if (!is_array($value)) {
+        if (!is_array($value) || count($value) > self::MAX_ARRAY_ITEMS) {
             return [];
         }
 
         $map = [];
         foreach ($value as $key => $item) {
-            if (is_string($key) && is_string($item) && $item !== '') {
+            if (
+                is_string($key)
+                && is_string($item)
+                && $item !== ''
+                && strlen($key) <= self::MAX_STRING_BYTES
+                && strlen($item) <= self::MAX_STRING_BYTES
+            ) {
                 $map[$key] = $item;
             }
         }
@@ -232,11 +242,16 @@ final readonly class RouteValueResolver
     {
         $values = array_values(array_unique(array_filter(
             $values,
-            static fn(mixed $value): bool => is_string($value) && $value !== '',
+            static fn(mixed $value): bool => is_string($value) && $value !== '' && strlen($value) <= self::MAX_STRING_BYTES,
         )));
         sort($values, SORT_STRING);
 
-        return $values;
+        return array_slice($values, 0, self::MAX_ARRAY_ITEMS);
+    }
+
+    private function boundedString(string $value): ?string
+    {
+        return strlen($value) <= self::MAX_STRING_BYTES ? $value : null;
     }
 
     private function classConstantValue(Node\Expr\ClassConstFetch $expr): string
@@ -249,7 +264,9 @@ final readonly class RouteValueResolver
             throw new RuntimeException('Unsupported route class constant.');
         }
 
-        return $this->resolvedName($expr->class);
+        $value = $this->boundedString($this->resolvedName($expr->class));
+
+        return $value ?? throw new RuntimeException('Route class constant exceeds the string limit.');
     }
 
     private function constantValue(Node\Expr\ConstFetch $expr): ?bool
@@ -265,6 +282,10 @@ final readonly class RouteValueResolver
     /** @param list<Node\Arg> $raw @return array<int|string,Node\Arg> */
     private function indexArgs(array $raw): array
     {
+        if (count($raw) > self::MAX_ARRAY_ITEMS) {
+            return [];
+        }
+
         $args = [];
         foreach ($raw as $position => $arg) {
             $args[$position] = $arg;
@@ -277,22 +298,26 @@ final readonly class RouteValueResolver
     }
 
     /** @return array<array-key,mixed> */
-    private function literalArray(Node\Expr\Array_ $array): array
+    private function literalArray(Node\Expr\Array_ $array, int $depth): array
     {
+        if (count($array->items) > self::MAX_ARRAY_ITEMS) {
+            throw new RuntimeException('Route array expression exceeds the item limit.');
+        }
+
         $result = [];
         foreach ($array->items as $item) {
             if (!$item instanceof Node\Expr\ArrayItem || $item->unpack) {
                 throw new RuntimeException('Unsupported route array expression.');
             }
 
-            $value = $this->literalValue($item->value);
+            $value = $this->literalValue($item->value, $depth);
             if ($item->key === null) {
                 $result[] = $value;
 
                 continue;
             }
 
-            $key = $this->literalValue($item->key);
+            $key = $this->literalValue($item->key, $depth);
             if (!is_string($key) && !is_int($key)) {
                 throw new RuntimeException('Unsupported route array key.');
             }
@@ -302,16 +327,34 @@ final readonly class RouteValueResolver
         return $result;
     }
 
-    private function literalValue(Node\Expr $expr): mixed
+    private function literalConcat(Node\Expr\BinaryOp\Concat $expr, int $depth): string
     {
+        $left = $this->literalValue($expr->left, $depth);
+        $right = $this->literalValue($expr->right, $depth);
+
+        if (!is_string($left) || !is_string($right)) {
+            throw new RuntimeException('Route concatenation must use strings.');
+        }
+
+        $value = $this->boundedString($left . $right);
+
+        return $value ?? throw new RuntimeException('Route string expression exceeds the string limit.');
+    }
+
+    private function literalValue(Node\Expr $expr, int $depth = 0): mixed
+    {
+        if ($depth > self::MAX_DEPTH) {
+            throw new RuntimeException('Route literal nesting limit exceeded.');
+        }
+
         return match (true) {
-            $expr instanceof Node\Scalar\String_ => $expr->value,
+            $expr instanceof Node\Scalar\String_ => $this->boundedString($expr->value) ?? throw new RuntimeException('Route string expression exceeds the string limit.'),
             $expr instanceof Node\Scalar\Int_ => $expr->value,
             $expr instanceof Node\Scalar\Float_ => $expr->value,
-            $expr instanceof Node\Expr\Array_ => $this->literalArray($expr),
+            $expr instanceof Node\Expr\Array_ => $this->literalArray($expr, $depth + 1),
             $expr instanceof Node\Expr\ConstFetch => $this->constantValue($expr),
             $expr instanceof Node\Expr\ClassConstFetch => $this->classConstantValue($expr),
-            $expr instanceof Node\Expr\BinaryOp\Concat => $this->literalValue($expr->left) . $this->literalValue($expr->right),
+            $expr instanceof Node\Expr\BinaryOp\Concat => $this->literalConcat($expr, $depth + 1),
             default => throw new RuntimeException('Non-literal route expression.'),
         };
     }
