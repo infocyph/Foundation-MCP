@@ -8,9 +8,15 @@ use RuntimeException;
 
 final class SecretPolicy
 {
+    private const array DENIED_SEGMENTS = ['.git', '.hg', '.svn'];
+
     private const array SECRET_BASENAMES = [
         '.git-credentials',
         '.netrc',
+        '.npmrc',
+        '.pypirc',
+        '.yarnrc',
+        '.yarnrc.yml',
         'auth.json',
         'credential',
         'credentials',
@@ -37,7 +43,14 @@ final class SecretPolicy
             return true;
         }
 
-        $basename = strtolower(basename(str_replace('\\', '/', $path)));
+        $normalized = str_replace('\\', '/', $path);
+        $segments = array_values(array_filter(explode('/', strtolower($normalized)), static fn(string $segment): bool => $segment !== ''));
+
+        if (array_intersect($segments, self::DENIED_SEGMENTS) !== []) {
+            return true;
+        }
+
+        $basename = strtolower(basename($normalized));
 
         if ($basename === '.env.example') {
             return false;
