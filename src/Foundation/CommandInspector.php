@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Infocyph\FoundationMcp\Foundation;
 
+use Infocyph\FoundationMcp\Analysis\Internal\PhpNodeBudgetVisitor;
 use Infocyph\FoundationMcp\Analysis\SymbolIndex;
 use Infocyph\FoundationMcp\Composer\ComposerInspector;
 use Infocyph\FoundationMcp\Foundation\Internal\CommandDefinitionScanner;
@@ -32,6 +33,10 @@ final class CommandInspector
     private const int MAX_COMMANDS = 1_000;
 
     private const int MAX_DIAGNOSTICS = 100;
+
+    private const int MAX_IDENTIFIER_BYTES = 1_024;
+
+    private const int MAX_ROUTE_NAME_BYTES = 512;
 
     private const int MAX_SOURCE_BYTES = 1_048_576;
 
@@ -95,7 +100,7 @@ final class CommandInspector
         $commands = [];
         foreach ($array->items as $item) {
             if (count($commands) >= self::MAX_COMMANDS) {
-                $this->diagnostic('output_limit_exceeded', self::SOURCE, null, sprintf('Command inspection is limited to %d entries.', self::MAX_COMMANDS));
+                $this->diagnostic('command_limit_exceeded', self::SOURCE, null, sprintf('Command inspection is limited to %d entries.', self::MAX_COMMANDS));
 
                 break;
             }
@@ -175,7 +180,16 @@ final class CommandInspector
                 'line' => $line,
                 'message' => $message,
             ];
+
+            return;
         }
+
+        $this->diagnostics[self::MAX_DIAGNOSTICS - 1] = [
+            'code' => 'diagnostics_truncated',
+            'source' => null,
+            'line' => null,
+            'message' => sprintf('Command diagnostics are limited to %d entries.', self::MAX_DIAGNOSTICS),
+        ];
     }
 
     /** @return array<string,mixed> */
@@ -250,7 +264,7 @@ final class CommandInspector
     private function handler(Node\Expr $expr): ?string
     {
         if ($expr instanceof Node\Scalar\String_) {
-            return ltrim($expr->value, '\\');
+            return strlen($expr->value) <= self::MAX_IDENTIFIER_BYTES ? ltrim($expr->value, '\\') : null;
         }
         if (
             $expr instanceof Node\Expr\ClassConstFetch
@@ -259,8 +273,9 @@ final class CommandInspector
             && strtolower($expr->name->toString()) === 'class'
         ) {
             $resolved = $expr->class->getAttribute('resolvedName');
+            $handler = ($resolved instanceof Node\Name ? $resolved : $expr->class)->toString();
 
-            return ($resolved instanceof Node\Name ? $resolved : $expr->class)->toString();
+            return strlen($handler) <= self::MAX_IDENTIFIER_BYTES ? $handler : null;
         }
 
         return null;
@@ -338,6 +353,7 @@ final class CommandInspector
 
         $traverser = new NodeTraverser();
         $traverser->addVisitor(new NameResolver(null, ['preserveOriginalNames' => true, 'replaceNodes' => false]));
+        $traverser->addVisitor(new PhpNodeBudgetVisitor());
 
         try {
             /** @var list<Node\Stmt> $resolved */
@@ -348,18 +364,31 @@ final class CommandInspector
             $this->diagnostic('parse_error', $source, $error->getStartLine() ?: null, $error->getRawMessage());
 
             return null;
+        } catch (RuntimeException $error) {
+            $this->diagnostic('inspection_limit_exceeded', $source, null, $error->getMessage());
+
+            return null;
         }
     }
 
     private function read(string $path): string
     {
-        $size = filesize($path);
-        if ($size !== false && $size > self::MAX_SOURCE_BYTES) {
-            throw new RuntimeException('Command source exceeds the 1 MiB inspection limit.');
-        }
-        $source = file_get_contents($path);
-        if ($source === false || strlen($source) > self::MAX_SOURCE_BYTES || str_contains($source, "\0")) {
+        $handle = fopen($path, 'rb');
+        if ($handle === false) {
             throw new RuntimeException('Command source could not be read safely.');
+        }
+
+        try {
+            $source = stream_get_contents($handle, self::MAX_SOURCE_BYTES + 1);
+        } finally {
+            fclose($handle);
+        }
+
+        if (!is_string($source) || str_contains($source, "\0")) {
+            throw new RuntimeException('Command source could not be read safely.');
+        }
+        if (strlen($source) > self::MAX_SOURCE_BYTES) {
+            throw new RuntimeException('Command source exceeds the 1 MiB inspection limit.');
         }
 
         return $source;
@@ -379,7 +408,7 @@ final class CommandInspector
 
     private function routeName(?Node\Expr $expr): ?string
     {
-        return $expr instanceof Node\Scalar\String_ ? $expr->value : null;
+        return $expr instanceof Node\Scalar\String_ && strlen($expr->value) <= self::MAX_ROUTE_NAME_BYTES ? $expr->value : null;
     }
 
     /** @param list<string> $values @return list<string> */
