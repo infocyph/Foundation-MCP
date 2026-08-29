@@ -4,10 +4,9 @@ declare(strict_types=1);
 
 namespace Infocyph\FoundationMcp\Mcp\Tool;
 
-use Composer\InstalledVersions;
 use Infocyph\FoundationMcp\Composer\InstalledPackage;
+use Infocyph\FoundationMcp\Diagnostics\RuntimeRequirements;
 use Infocyph\FoundationMcp\Project\SourceRoots;
-use PhpParser\ParserFactory;
 use Throwable;
 
 final readonly class ProjectTool
@@ -32,15 +31,30 @@ final readonly class ProjectTool
         $project = $this->services->project;
         $composer = $this->services->composer();
         $foundation = $composer->foundation();
-        $roots = SourceRoots::discover($project);
         $modules = [];
         $moduleDiagnostics = [];
+        $sourceRoots = ['application' => [], 'tests' => [], 'structural' => []];
+        $sourceRootDiagnostics = [];
 
         try {
             $modules = $this->services->modules()->modules();
         } catch (Throwable $error) {
             $moduleDiagnostics[] = [
                 'code' => 'module_catalog_invalid',
+                'message' => $error->getMessage(),
+            ];
+        }
+
+        try {
+            $roots = SourceRoots::discover($project);
+            $sourceRoots = [
+                'application' => $this->relativeRoots($roots->application),
+                'tests' => $this->relativeRoots($roots->tests),
+                'structural' => $this->relativeRoots($roots->structural),
+            ];
+        } catch (Throwable $error) {
+            $sourceRootDiagnostics[] = [
+                'code' => 'source_root_inspection_failed',
                 'message' => $error->getMessage(),
             ];
         }
@@ -58,14 +72,11 @@ final readonly class ProjectTool
                 'runtime_direct' => $composer->graph()->runtimeDirect(),
                 'dev_direct' => $composer->graph()->devDirect(),
                 'platform_requirements' => $composer->platformRequirements(),
-                'diagnostics' => array_slice($composer->diagnostics(), 0, 100),
+                'diagnostics' => $composer->diagnostics(),
             ],
             'analysis' => $this->analysisReadiness(),
-            'source_roots' => [
-                'application' => $this->relativeRoots($roots->application),
-                'tests' => $this->relativeRoots($roots->tests),
-                'structural' => $this->relativeRoots($roots->structural),
-            ],
+            'source_roots' => $sourceRoots,
+            'source_root_diagnostics' => $sourceRootDiagnostics,
             'git' => $this->gitSummary(),
             'modules' => $modules,
             'module_diagnostics' => $moduleDiagnostics,
@@ -76,38 +87,26 @@ final readonly class ProjectTool
     private function analysisReadiness(): array
     {
         $diagnostics = [];
-        $phpforge = null;
+        $phpForge = RuntimeRequirements::phpForgeCheck();
+        $parser = RuntimeRequirements::parserCheck();
 
-        try {
-            if (InstalledVersions::isInstalled('infocyph/phpforge')) {
-                $phpforge = InstalledVersions::getPrettyVersion('infocyph/phpforge')
-                    ?? InstalledVersions::getVersion('infocyph/phpforge')
-                    ?? 'installed';
-            } else {
-                $diagnostics[] = ['code' => 'phpforge_unavailable', 'message' => 'PHPForge is not installed.'];
-            }
-        } catch (Throwable $error) {
-            $diagnostics[] = ['code' => 'phpforge_unavailable', 'message' => $error->getMessage()];
+        if (!$phpForge['ok']) {
+            $diagnostics[] = ['code' => 'phpforge_unavailable', 'message' => $phpForge['detail']];
         }
-
-        $parser = false;
-        if (class_exists(ParserFactory::class)) {
-            try {
-                $nodes = new ParserFactory()->createForNewestSupportedVersion()->parse('<?php final class FoundationMcpToolProbe {}');
-                $parser = is_array($nodes) && $nodes !== [];
-            } catch (Throwable $error) {
-                $diagnostics[] = ['code' => 'analysis_backend_incompatible', 'message' => $error->getMessage()];
-            }
-        }
-        if (!$parser && !array_any($diagnostics, static fn(array $item): bool => $item['code'] === 'analysis_backend_incompatible')) {
-            $diagnostics[] = ['code' => 'analysis_backend_unavailable', 'message' => 'PHP parser capability is unavailable.'];
+        if (!$parser['ok']) {
+            $diagnostics[] = [
+                'code' => str_starts_with($parser['detail'], 'Parser compatibility failure:')
+                    ? 'analysis_backend_incompatible'
+                    : 'analysis_backend_unavailable',
+                'message' => $parser['detail'],
+            ];
         }
 
         return [
-            'ready' => $phpforge !== null && $parser,
-            'phpforge' => $phpforge,
-            'parser' => $parser,
-            'diagnostics' => array_slice($diagnostics, 0, 20),
+            'ready' => $phpForge['ok'] && $parser['ok'],
+            'phpforge' => $phpForge['ok'] ? $phpForge['detail'] : null,
+            'parser' => $parser['ok'],
+            'diagnostics' => $diagnostics,
         ];
     }
 
