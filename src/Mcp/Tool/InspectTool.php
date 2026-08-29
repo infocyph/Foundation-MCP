@@ -6,9 +6,16 @@ namespace Infocyph\FoundationMcp\Mcp\Tool;
 
 use Infocyph\FoundationMcp\Project\SourceRoots;
 use InvalidArgumentException;
+use Throwable;
 
 final readonly class InspectTool
 {
+    private const int MAX_AUTOLOAD_DEPTH = 16;
+
+    private const int MAX_AUTOLOAD_ITEMS = 1_024;
+
+    private const int MAX_STRING_BYTES = 2_048;
+
     public const string DESCRIPTION = 'Inspect one Foundation structural concern: architecture, modules, routes, commands, providers, config, workers, schedules, runtime/bootstrap, or Composer autoload roots.';
 
     public const array INPUT_SCHEMA = [
@@ -34,10 +41,7 @@ final readonly class InspectTool
     {
         return match ($kind) {
             'architecture' => $this->services->architecture()->inspect(),
-            'modules' => [
-                'kind' => 'modules',
-                'modules' => $this->services->modules()->modules(),
-            ],
+            'modules' => $this->modules(),
             'routes' => ['kind' => 'routes', ...$this->services->routes()->inspect()],
             'commands' => ['kind' => 'commands', ...$this->services->commands()->inspect()],
             'providers' => ['kind' => 'providers', ...$this->services->providers()->inspect()],
@@ -53,19 +57,58 @@ final readonly class InspectTool
     /** @return array<string,mixed> */
     private function autoload(): array
     {
-        $roots = SourceRoots::discover($this->services->project);
         $composer = $this->services->project->composer;
+        $autoload = is_array($composer['autoload'] ?? null) ? $composer['autoload'] : [];
+        $autoloadDev = is_array($composer['autoload-dev'] ?? null) ? $composer['autoload-dev'] : [];
+        [$safeAutoload, $autoloadTruncated] = $this->safeAutoload($autoload);
+        [$safeAutoloadDev, $autoloadDevTruncated] = $this->safeAutoload($autoloadDev);
+        $sourceRoots = ['application' => [], 'tests' => [], 'structural' => []];
+        $diagnostics = [];
 
-        return [
-            'kind' => 'autoload',
-            'autoload' => $this->safeAutoload(is_array($composer['autoload'] ?? null) ? $composer['autoload'] : []),
-            'autoload_dev' => $this->safeAutoload(is_array($composer['autoload-dev'] ?? null) ? $composer['autoload-dev'] : []),
-            'source_roots' => [
+        try {
+            $roots = SourceRoots::discover($this->services->project);
+            $sourceRoots = [
                 'application' => $this->relativeRoots($roots->application),
                 'tests' => $this->relativeRoots($roots->tests),
                 'structural' => $this->relativeRoots($roots->structural),
-            ],
+            ];
+        } catch (Throwable $error) {
+            $diagnostics[] = [
+                'code' => 'source_root_inspection_failed',
+                'message' => $error->getMessage(),
+            ];
+        }
+
+        return [
+            'kind' => 'autoload',
+            'autoload' => $safeAutoload,
+            'autoload_truncated' => $autoloadTruncated,
+            'autoload_dev' => $safeAutoloadDev,
+            'autoload_dev_truncated' => $autoloadDevTruncated,
+            'source_roots' => $sourceRoots,
+            'diagnostics' => $diagnostics,
         ];
+    }
+
+    /** @return array<string,mixed> */
+    private function modules(): array
+    {
+        try {
+            return [
+                'kind' => 'modules',
+                'modules' => $this->services->modules()->modules(),
+                'diagnostics' => [],
+            ];
+        } catch (Throwable $error) {
+            return [
+                'kind' => 'modules',
+                'modules' => [],
+                'diagnostics' => [[
+                    'code' => 'module_catalog_invalid',
+                    'message' => $error->getMessage(),
+                ]],
+            ];
+        }
     }
 
     /** @param list<string> $roots @return list<string> */
@@ -84,18 +127,38 @@ final readonly class InspectTool
         return array_values(array_unique($result));
     }
 
-    private function safeAutoload(mixed $value): mixed
+    /** @return array{0:mixed,1:bool} */
+    private function safeAutoload(mixed $value): array
     {
+        $remaining = self::MAX_AUTOLOAD_ITEMS;
+        $truncated = false;
+        $safe = $this->safeAutoloadValue($value, $remaining, $truncated);
+
+        return [$safe, $truncated];
+    }
+
+    private function safeAutoloadValue(mixed $value, int &$remaining, bool &$truncated, int $depth = 0): mixed
+    {
+        if ($depth >= self::MAX_AUTOLOAD_DEPTH) {
+            if (is_array($value)) {
+                $truncated = true;
+
+                return '[TRUNCATED]';
+            }
+
+            return $value;
+        }
         if (is_array($value)) {
             $result = [];
-            $count = 0;
             foreach ($value as $key => $item) {
-                if (++$count > 200) {
+                if ($remaining <= 0) {
+                    $truncated = true;
                     $result['__truncated__'] = true;
 
                     break;
                 }
-                $result[$key] = $this->safeAutoload($item);
+                --$remaining;
+                $result[$key] = $this->safeAutoloadValue($item, $remaining, $truncated, $depth + 1);
             }
 
             return $result;
@@ -108,7 +171,22 @@ final readonly class InspectTool
         if (str_starts_with($path, '/') || str_starts_with($path, '//') || preg_match('/^[A-Za-z]:\//', $path) === 1 || in_array('..', explode('/', $path), true)) {
             return '[DENIED_PATH]';
         }
+        if (strlen($value) <= self::MAX_STRING_BYTES) {
+            return $value;
+        }
 
-        return strlen($value) > 2_048 ? substr($value, 0, 2_048) . '…' : $value;
+        $truncated = true;
+
+        return $this->truncateUtf8($value, self::MAX_STRING_BYTES) . '…';
+    }
+
+    private function truncateUtf8(string $value, int $bytes): string
+    {
+        $value = substr($value, 0, $bytes);
+        while ($value !== '' && preg_match('//u', $value) !== 1) {
+            $value = substr($value, 0, -1);
+        }
+
+        return $value;
     }
 }
