@@ -15,7 +15,15 @@ use RuntimeException;
 
 final class InstalledRoutingContract
 {
+    private const int MAX_ARRAY_ITEMS = 256;
+
+    private const int MAX_DEPTH = 8;
+
+    private const int MAX_RESOURCE_CACHE_ENTRIES = 64;
+
     private const int MAX_SOURCE_BYTES = 1_048_576;
+
+    private const int MAX_STRING_BYTES = 8_192;
 
     private readonly Parser $parser;
 
@@ -52,7 +60,7 @@ final class InstalledRoutingContract
         $methods = [];
         foreach ($enum->stmts as $statement) {
             if ($statement instanceof Node\Stmt\EnumCase && $statement->expr instanceof Node\Scalar\String_) {
-                $methods[$statement->name->toString()] = $this->normalizeHttpMethod($statement->expr->value);
+                $methods[$statement->name->toString()] = $this->normalizeHttpMethod(statement: $statement->expr->value);
             }
         }
 
@@ -63,13 +71,16 @@ final class InstalledRoutingContract
         return $this->methods = $methods;
     }
 
-    /**
-     * @return list<array{method:string,suffix:string,action:string,key:string,nameable:bool}>
-     */
+    /** @return list<array{method:string,suffix:string,action:string,key:string,nameable:bool}> */
     public function resourceSpec(string $param = 'id', string $patchAction = 'update'): array
     {
-        if ($param === '' || $patchAction === '') {
-            throw new RuntimeException('Resource route parameters must be non-empty.');
+        if (
+            $param === ''
+            || $patchAction === ''
+            || strlen($param) > 128
+            || strlen($patchAction) > 128
+        ) {
+            throw new RuntimeException('Resource route parameters must be non-empty and at most 128 bytes.');
         }
 
         $cacheKey = $param . "\0" . $patchAction;
@@ -88,8 +99,13 @@ final class InstalledRoutingContract
             'patchAction' => $patchAction,
             '__http_methods' => $this->httpMethods(),
         ]);
+        $spec = $this->normalizeResourceSpec($value);
 
-        return $this->resourceSpecs[$cacheKey] = $this->normalizeResourceSpec($value);
+        if (count($this->resourceSpecs) < self::MAX_RESOURCE_CACHE_ENTRIES) {
+            $this->resourceSpecs[$cacheKey] = $spec;
+        }
+
+        return $spec;
     }
 
     /** @return list<string> */
@@ -113,9 +129,7 @@ final class InstalledRoutingContract
         return $this->routeFiles = $this->normalizeRouteFiles($value);
     }
 
-    /**
-     * @param list<Node\Stmt> $nodes
-     */
+    /** @param list<Node\Stmt> $nodes */
     private function constructorParameterDefault(array $nodes, string $className, string $parameter): ?Node\Expr
     {
         $class = $this->namedClass($nodes, $className);
@@ -154,31 +168,34 @@ final class InstalledRoutingContract
         return $methods[$case];
     }
 
-    /**
-     * @param array<string, mixed> $variables
-     */
-    private function literal(Node\Expr $expr, array $variables): mixed
+    /** @param array<string, mixed> $variables */
+    private function literal(Node\Expr $expr, array $variables, int $depth = 0): mixed
     {
+        if ($depth > self::MAX_DEPTH) {
+            throw new RuntimeException('Installed routing contract literal nesting limit exceeded.');
+        }
+
         return match (true) {
-            $expr instanceof Node\Scalar\String_ => $expr->value,
+            $expr instanceof Node\Scalar\String_ => $this->string($expr->value),
             $expr instanceof Node\Scalar\Int_ => $expr->value,
             $expr instanceof Node\Scalar\Float_ => $expr->value,
-            $expr instanceof Node\Expr\Array_ => $this->literalArray($expr, $variables),
+            $expr instanceof Node\Expr\Array_ => $this->literalArray($expr, $variables, $depth + 1),
             $expr instanceof Node\Expr\ConstFetch => $this->literalConst($expr),
             $expr instanceof Node\Expr\Variable && is_string($expr->name) => $variables[$expr->name] ?? throw new RuntimeException('Installed routing contract contains an unsupported variable expression.'),
-            $expr instanceof Node\Expr\BinaryOp\Concat => $this->literal($expr->left, $variables) . $this->literal($expr->right, $variables),
-            $expr instanceof Node\Expr\BinaryOp\NotIdentical => $this->literal($expr->left, $variables) !== $this->literal($expr->right, $variables),
+            $expr instanceof Node\Expr\BinaryOp\Concat => $this->literalConcat($expr, $variables, $depth + 1),
+            $expr instanceof Node\Expr\BinaryOp\NotIdentical => $this->literal($expr->left, $variables, $depth + 1) !== $this->literal($expr->right, $variables, $depth + 1),
             $expr instanceof Node\Expr\PropertyFetch => $this->enumValue($expr, $variables),
             default => throw new RuntimeException('Installed routing contract contains a non-literal expression.'),
         };
     }
 
-    /**
-     * @param array<string, mixed> $variables
-     * @return array<array-key, mixed>
-     */
-    private function literalArray(Node\Expr\Array_ $array, array $variables): array
+    /** @param array<string, mixed> $variables @return array<array-key, mixed> */
+    private function literalArray(Node\Expr\Array_ $array, array $variables, int $depth): array
     {
+        if (count($array->items) > self::MAX_ARRAY_ITEMS) {
+            throw new RuntimeException('Installed routing contract array item limit exceeded.');
+        }
+
         $result = [];
 
         foreach ($array->items as $item) {
@@ -186,14 +203,14 @@ final class InstalledRoutingContract
                 throw new RuntimeException('Installed routing contract contains unsupported array syntax.');
             }
 
-            $value = $this->literal($item->value, $variables);
+            $value = $this->literal($item->value, $variables, $depth);
             if ($item->key === null) {
                 $result[] = $value;
 
                 continue;
             }
 
-            $key = $this->literal($item->key, $variables);
+            $key = $this->literal($item->key, $variables, $depth);
             if (!is_int($key) && !is_string($key)) {
                 throw new RuntimeException('Installed routing contract contains an invalid array key.');
             }
@@ -201,6 +218,19 @@ final class InstalledRoutingContract
         }
 
         return $result;
+    }
+
+    /** @param array<string, mixed> $variables */
+    private function literalConcat(Node\Expr\BinaryOp\Concat $expr, array $variables, int $depth): string
+    {
+        $left = $this->literal($expr->left, $variables, $depth);
+        $right = $this->literal($expr->right, $variables, $depth);
+
+        if (!is_string($left) || !is_string($right)) {
+            throw new RuntimeException('Installed routing contract concatenation must use strings.');
+        }
+
+        return $this->string($left . $right);
     }
 
     private function literalConst(Node\Expr\ConstFetch $expr): ?bool
@@ -250,9 +280,9 @@ final class InstalledRoutingContract
         return null;
     }
 
-    private function normalizeHttpMethod(string $value): string
+    private function normalizeHttpMethod(string $statement): string
     {
-        $value = strtoupper($value);
+        $value = strtoupper($statement);
         if ($value === '' || preg_match('~^[A-Z]+$~D', $value) !== 1) {
             throw new RuntimeException('Installed Webrick HTTP-method contract is invalid.');
         }
@@ -260,9 +290,7 @@ final class InstalledRoutingContract
         return $value;
     }
 
-    /**
-     * @return list<array{method:string,suffix:string,action:string,key:string,nameable:bool}>
-     */
+    /** @return list<array{method:string,suffix:string,action:string,key:string,nameable:bool}> */
     private function normalizeResourceSpec(mixed $value): array
     {
         if (!is_array($value) || count($value) > 32) {
@@ -279,6 +307,10 @@ final class InstalledRoutingContract
                 || !is_string($row[2] ?? null)
                 || !is_string($row[3] ?? null)
                 || !is_bool($row[4] ?? null)
+                || strlen($row[0]) > 32
+                || strlen($row[1]) > self::MAX_STRING_BYTES
+                || strlen($row[2]) > 128
+                || strlen($row[3]) > 128
             ) {
                 throw new RuntimeException('Installed Webrick resource-route contract is invalid.');
             }
@@ -341,23 +373,28 @@ final class InstalledRoutingContract
 
     private function read(string $path): string
     {
-        $size = filesize($path);
-        if ($size !== false && $size > self::MAX_SOURCE_BYTES) {
-            throw new RuntimeException('Installed routing contract exceeds the 1 MiB read limit.');
+        $handle = fopen($path, 'rb');
+        if ($handle === false) {
+            throw new RuntimeException('Installed routing contract could not be read safely.');
         }
 
-        $source = file_get_contents($path);
-        if ($source === false || strlen($source) > self::MAX_SOURCE_BYTES || str_contains($source, "\0")) {
+        try {
+            $source = stream_get_contents($handle, self::MAX_SOURCE_BYTES + 1);
+        } finally {
+            fclose($handle);
+        }
+
+        if (!is_string($source) || str_contains($source, "\0")) {
             throw new RuntimeException('Installed routing contract could not be read safely.');
+        }
+        if (strlen($source) > self::MAX_SOURCE_BYTES) {
+            throw new RuntimeException('Installed routing contract exceeds the 1 MiB read limit.');
         }
 
         return $source;
     }
 
-    /**
-     * @param list<Node\Stmt> $nodes
-     * @return list<Node\Stmt>
-     */
+    /** @param list<Node\Stmt> $nodes @return list<Node\Stmt> */
     private function statements(array $nodes): array
     {
         $statements = [];
@@ -371,5 +408,14 @@ final class InstalledRoutingContract
         }
 
         return $statements;
+    }
+
+    private function string(string $value): string
+    {
+        if (strlen($value) > self::MAX_STRING_BYTES) {
+            throw new RuntimeException('Installed routing contract literal string limit exceeded.');
+        }
+
+        return $value;
     }
 }
