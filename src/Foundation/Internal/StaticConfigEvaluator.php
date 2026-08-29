@@ -16,6 +16,8 @@ use RuntimeException;
  */
 final class StaticConfigEvaluator
 {
+    private const int MAX_COLLECTION_ITEMS = 256;
+
     private const int MAX_DEPTH = 64;
 
     private const int MAX_STRING_BYTES = 8_192;
@@ -32,6 +34,7 @@ final class StaticConfigEvaluator
     {
         if (++$this->depth > self::MAX_DEPTH) {
             --$this->depth;
+
             throw new RuntimeException('Static config expression exceeds the 64-level evaluation depth limit.');
         }
 
@@ -167,6 +170,10 @@ final class StaticConfigEvaluator
     /** @param list<Node\Arg> $args @return EvalResult */
     private function dynamicFromArgs(array $args): array
     {
+        if (count($args) > self::MAX_COLLECTION_ITEMS) {
+            throw new RuntimeException('Static config function argument limit exceeded.');
+        }
+
         $environment = [];
         $classes = [];
         foreach ($args as $arg) {
@@ -205,6 +212,10 @@ final class StaticConfigEvaluator
             return $this->dynamicFromArgs($expr->args);
         }
 
+        if (count($expr->args) > 2) {
+            throw new RuntimeException('Static config environment helper argument limit exceeded.');
+        }
+
         $name = isset($expr->args[0]) ? $this->evaluate($expr->args[0]->value) : $this->dynamic();
         $default = isset($expr->args[1]) ? $this->evaluate($expr->args[1]->value) : $this->literal(null);
         if ($name['status'] !== 'literal' || !is_string($name['value']) || $name['value'] === '') {
@@ -213,7 +224,7 @@ final class StaticConfigEvaluator
 
         $environment = $default['environment'];
         $environment[] = [
-            'name' => $name['value'],
+            'name' => $this->string($name['value']),
             'helper' => $helper,
             'has_default' => isset($expr->args[1]),
             'default' => $default['status'] === 'literal' ? $default['value'] : null,
@@ -234,11 +245,19 @@ final class StaticConfigEvaluator
         $env = [];
         foreach ($environment as $item) {
             $env[strtolower($item['name']) . '|' . $item['helper']] = $item;
+
+            if (count($env) > self::MAX_COLLECTION_ITEMS) {
+                throw new RuntimeException('Static config environment reference limit exceeded.');
+            }
         }
         $classMap = [];
         foreach ($classes as $class) {
             if ($class !== '') {
-                $classMap[$class] = true;
+                $classMap[$this->string($class)] = true;
+            }
+
+            if (count($classMap) > self::MAX_COLLECTION_ITEMS) {
+                throw new RuntimeException('Static config class reference limit exceeded.');
             }
         }
 
@@ -260,7 +279,7 @@ final class StaticConfigEvaluator
     {
         $resolved = $name->getAttribute('resolvedName');
 
-        return ltrim(($resolved instanceof Name ? $resolved : $name)->toString(), '\\');
+        return $this->string(ltrim(($resolved instanceof Name ? $resolved : $name)->toString(), '\\'));
     }
 
     private function string(string $value): string
@@ -269,14 +288,8 @@ final class StaticConfigEvaluator
             throw new RuntimeException('Static config string literal must be valid UTF-8.');
         }
 
-        if (strlen($value) <= self::MAX_STRING_BYTES) {
-            return $value;
-        }
-
-        $value = substr($value, 0, self::MAX_STRING_BYTES);
-
-        while ($value !== '' && preg_match('//u', $value) !== 1) {
-            $value = substr($value, 0, -1);
+        if (strlen($value) > self::MAX_STRING_BYTES) {
+            throw new RuntimeException('Static config string literal exceeds the 8 KiB limit.');
         }
 
         return $value;
