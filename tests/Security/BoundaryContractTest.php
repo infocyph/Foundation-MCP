@@ -7,6 +7,7 @@ use Infocyph\FoundationMcp\Git\GitRunner;
 use Infocyph\FoundationMcp\Mcp\OutputBudget;
 use Infocyph\FoundationMcp\Project\ProjectDetector;
 use Infocyph\FoundationMcp\Resource\ResourceReader;
+use Infocyph\FoundationMcp\Security\SecretPolicy;
 use Infocyph\FoundationMcp\Tests\Support\TempProject;
 
 it('rejects secret traversal binary oversized output and shell-shaped Git inputs', function (): void {
@@ -19,6 +20,7 @@ it('rejects secret traversal binary oversized output and shell-shaped Git inputs
         files: [
             'README.md' => "safe\n",
             '.env' => "APP_KEY=super-secret\n",
+            '.npmrc' => "//registry.npmjs.org/:_authToken=super-secret\n",
             'binary.bin' => "abc\0def",
             'large.txt' => str_repeat('x', 1_048_577),
         ],
@@ -27,18 +29,29 @@ it('rejects secret traversal binary oversized output and shell-shaped Git inputs
     try {
         $project = (new ProjectDetector())->detect($root);
         $reader = new ResourceReader($project, new ComposerInspector($project));
+        $secrets = new SecretPolicy();
 
         expect(fn () => $reader->project('.env'))->toThrow(RuntimeException::class)
+            ->and(fn () => $reader->project('.npmrc'))->toThrow(RuntimeException::class)
             ->and(fn () => $reader->project('../outside.txt'))->toThrow(RuntimeException::class)
             ->and(fn () => $reader->project('binary.bin'))->toThrow(RuntimeException::class)
             ->and(fn () => $reader->project('large.txt'))->toThrow(RuntimeException::class)
-            ->and(fn () => (new OutputBudget())->tool(['payload' => str_repeat('x', 1_048_577)]))->toThrow(RuntimeException::class);
+            ->and(fn () => (new OutputBudget())->tool(['payload' => str_repeat('x', 1_048_577)]))->toThrow(RuntimeException::class)
+            ->and($secrets->denied('.git/config'))->toBeTrue()
+            ->and($secrets->denied('nested/.hg/hgrc'))->toBeTrue()
+            ->and($secrets->denied('nested/.svn/entries'))->toBeTrue()
+            ->and($secrets->denied('.pypirc'))->toBeTrue()
+            ->and($secrets->denied('.yarnrc.yml'))->toBeTrue()
+            ->and($secrets->denied('.env.example'))->toBeFalse()
+            ->and($secrets->denied('.gitignore'))->toBeFalse();
 
         securityGit($root, ['init', '-q']);
         securityGit($root, ['config', 'user.email', 'security@example.com']);
         securityGit($root, ['config', 'user.name', 'Security Test']);
         securityGit($root, ['add', 'README.md']);
         securityGit($root, ['commit', '-qm', 'baseline']);
+
+        expect(fn () => $reader->project('.git/config'))->toThrow(RuntimeException::class);
 
         $runner = new GitRunner($project);
         expect($runner->headFile('README.md;touch PWNED'))->toBeNull()
