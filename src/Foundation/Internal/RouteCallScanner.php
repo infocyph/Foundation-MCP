@@ -20,11 +20,17 @@ final class RouteCallScanner
 
     private const int MAX_ROUTES = 2_000;
 
+    private const int MAX_SCAN_DEPTH = 64;
+
     /** @var list<Diagnostic> */
     private array $diagnostics = [];
 
+    private int $expressionDepth = 0;
+
     /** @var list<RouteEntry> */
     private array $routes = [];
+
+    private int $scanDepth = 0;
 
     /** @param array<string,true> $verbs */
     public function __construct(
@@ -52,6 +58,8 @@ final class RouteCallScanner
     ): array {
         $this->routes = [];
         $this->diagnostics = [];
+        $this->scanDepth = 0;
+        $this->expressionDepth = 0;
         $this->scanNodes($nodes, $scope ?? $this->groups->emptyScope(), $routers, $presets, $conditional, $origin, $source);
 
         return ['routes' => $this->routes, 'diagnostics' => $this->diagnostics];
@@ -61,19 +69,27 @@ final class RouteCallScanner
     private function append(array $result): void
     {
         foreach ($result['routes'] as $route) {
-            if (count($this->routes) >= self::MAX_ROUTES) {
-                $this->limitDiagnostic();
-
+            if (!$this->appendRoute($route)) {
                 break;
             }
-            $this->routes[] = $route;
         }
         foreach ($result['diagnostics'] as $diagnostic) {
-            if (count($this->diagnostics) >= self::MAX_DIAGNOSTICS) {
-                break;
-            }
-            $this->diagnostics[] = $diagnostic;
+            $this->diagnostic($diagnostic['code'], $diagnostic['source'], $diagnostic['line'], $diagnostic['message']);
         }
+    }
+
+    /** @param RouteEntry $route */
+    private function appendRoute(array $route): bool
+    {
+        if (count($this->routes) >= self::MAX_ROUTES) {
+            $this->limitDiagnostic();
+
+            return false;
+        }
+
+        $this->routes[] = $route;
+
+        return true;
     }
 
     private function callMethod(Node\Expr $expr): ?string
@@ -121,7 +137,16 @@ final class RouteCallScanner
                 'line' => $line,
                 'message' => $message,
             ];
+
+            return;
         }
+
+        $this->diagnostics[self::MAX_DIAGNOSTICS - 1] = [
+            'code' => 'diagnostics_truncated',
+            'source' => null,
+            'line' => null,
+            'message' => sprintf('Route-call diagnostics are limited to %d entries.', self::MAX_DIAGNOSTICS),
+        ];
     }
 
     /**
@@ -168,18 +193,14 @@ final class RouteCallScanner
     private function limitDiagnostic(): void
     {
         foreach ($this->diagnostics as $item) {
-            if ($item['code'] === 'output_limit_exceeded') {
+            if ($item['code'] === 'route_limit_exceeded') {
                 return;
             }
         }
-        $this->diagnostic('output_limit_exceeded', null, null, sprintf('Route-call inspection is limited to %d routes.', self::MAX_ROUTES));
+        $this->diagnostic('route_limit_exceeded', null, null, sprintf('Route-call inspection is limited to %d routes.', self::MAX_ROUTES));
     }
 
-    /**
-     * @param list<string> $aliases
-     * @param list<string> $dynamic
-     * @return list<string>
-     */
+    /** @param list<string> $aliases @param list<string> $dynamic @return list<string> */
     private function prefixAliases(array $aliases, ?string $prefix, array &$dynamic): array
     {
         if ($aliases === [] || $prefix === '') {
@@ -283,7 +304,7 @@ final class RouteCallScanner
         }
 
         if ($call['kind'] === 'route') {
-            $this->routes[] = $this->route($expr, $call['method'], $scope, $conditional, $origin, $source);
+            $this->appendRoute($this->route($expr, $call['method'], $scope, $conditional, $origin, $source));
 
             return true;
         }
@@ -316,38 +337,45 @@ final class RouteCallScanner
         string $origin,
         string $source,
     ): void {
-        if ($expr instanceof Node\Expr\Closure || $expr instanceof Node\Expr\ArrowFunction) {
-            return;
-        }
-        if ($this->scanCall($expr, $scope, $routers, $presets, $conditional, $origin, $source)) {
+        if (++$this->expressionDepth > self::MAX_SCAN_DEPTH) {
+            --$this->expressionDepth;
+            $this->diagnostic('inspection_limit_exceeded', $source, $expr->getStartLine(), sprintf('Route expression nesting exceeds %d levels.', self::MAX_SCAN_DEPTH));
+
             return;
         }
 
-        foreach ($expr->getSubNodeNames() as $name) {
-            $value = $expr->{$name};
-            if ($value instanceof Node\Expr) {
-                $this->scanExpressionTree($value, $scope, $routers, $presets, $conditional, $origin, $source);
+        try {
+            if ($expr instanceof Node\Expr\Closure || $expr instanceof Node\Expr\ArrowFunction) {
+                return;
+            }
+            if ($this->scanCall($expr, $scope, $routers, $presets, $conditional, $origin, $source)) {
+                return;
+            }
 
-                continue;
-            }
-            if (!is_array($value)) {
-                continue;
-            }
-            foreach ($value as $item) {
-                if ($item instanceof Node\Expr) {
-                    $this->scanExpressionTree($item, $scope, $routers, $presets, $conditional, $origin, $source);
-                } elseif ($item instanceof Node\Arg) {
-                    $this->scanExpressionTree($item->value, $scope, $routers, $presets, $conditional, $origin, $source);
+            foreach ($expr->getSubNodeNames() as $name) {
+                $value = $expr->{$name};
+                if ($value instanceof Node\Expr) {
+                    $this->scanExpressionTree($value, $scope, $routers, $presets, $conditional, $origin, $source);
+
+                    continue;
+                }
+                if (!is_array($value)) {
+                    continue;
+                }
+                foreach ($value as $item) {
+                    if ($item instanceof Node\Expr) {
+                        $this->scanExpressionTree($item, $scope, $routers, $presets, $conditional, $origin, $source);
+                    } elseif ($item instanceof Node\Arg) {
+                        $this->scanExpressionTree($item->value, $scope, $routers, $presets, $conditional, $origin, $source);
+                    }
                 }
             }
+        } finally {
+            --$this->expressionDepth;
         }
     }
 
-    /**
-     * @param Scope $scope
-     * @param array<string,true> $routers
-     * @param array<string,true> $presets
-     */
+    /** @param Scope $scope @param array<string,true> $routers @param array<string,true> $presets */
     private function scanIf(Node\Stmt\If_ $if, array $scope, array $routers, array $presets, string $origin, string $source): void
     {
         $this->scanNodes($if->stmts, $scope, $routers, $presets, true, $origin, $source);
@@ -359,11 +387,7 @@ final class RouteCallScanner
         }
     }
 
-    /**
-     * @param Scope $scope
-     * @param array<string,true> $routers
-     * @param array<string,true> $presets
-     */
+    /** @param Scope $scope @param array<string,true> $routers @param array<string,true> $presets */
     private function scanNode(
         Node $node,
         array $scope,
@@ -422,21 +446,28 @@ final class RouteCallScanner
         string $origin,
         string $source,
     ): void {
-        foreach ($nodes as $node) {
-            $this->scanNode($node, $scope, $routers, $presets, $conditional, $origin, $source);
-            if (count($this->routes) >= self::MAX_ROUTES) {
-                $this->limitDiagnostic();
+        if (++$this->scanDepth > self::MAX_SCAN_DEPTH) {
+            --$this->scanDepth;
+            $this->diagnostic('inspection_limit_exceeded', $source, null, sprintf('Route statement nesting exceeds %d levels.', self::MAX_SCAN_DEPTH));
 
-                return;
+            return;
+        }
+
+        try {
+            foreach ($nodes as $node) {
+                $this->scanNode($node, $scope, $routers, $presets, $conditional, $origin, $source);
+                if (count($this->routes) >= self::MAX_ROUTES) {
+                    $this->limitDiagnostic();
+
+                    return;
+                }
             }
+        } finally {
+            --$this->scanDepth;
         }
     }
 
-    /**
-     * @param Scope $scope
-     * @param array<string,true> $routers
-     * @param array<string,true> $presets
-     */
+    /** @param Scope $scope @param array<string,true> $routers @param array<string,true> $presets */
     private function scanTry(Node\Stmt\TryCatch $try, array $scope, array $routers, array $presets, string $origin, string $source): void
     {
         $this->scanNodes($try->stmts, $scope, $routers, $presets, true, $origin, $source);
