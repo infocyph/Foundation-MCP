@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Infocyph\FoundationMcp\Foundation;
 
+use Infocyph\FoundationMcp\Analysis\Internal\PhpNodeBudgetVisitor;
 use Infocyph\FoundationMcp\Analysis\SymbolIndex;
 use Infocyph\FoundationMcp\Composer\ComposerInspector;
 use Infocyph\FoundationMcp\Project\Project;
@@ -29,6 +30,8 @@ use RuntimeException;
 final class ProviderInspector
 {
     private const int MAX_DIAGNOSTICS = 100;
+
+    private const int MAX_IDENTIFIER_BYTES = 1_024;
 
     private const int MAX_PROVIDERS = 1_000;
 
@@ -57,11 +60,7 @@ final class ProviderInspector
         $this->symbols = $symbols ?? new SymbolIndex($project, $composer);
     }
 
-    /**
-     * @return array{
-     *   groups:list<string>,providers:list<ProviderEntry>,effective:array<string,list<string>>,diagnostics:list<Diagnostic>
-     * }
-     */
+    /** @return array{groups:list<string>,providers:list<ProviderEntry>,effective:array<string,list<string>>,diagnostics:list<Diagnostic>} */
     public function inspect(): array
     {
         $this->diagnostics = [];
@@ -86,10 +85,7 @@ final class ProviderInspector
         ];
     }
 
-    /**
-     * @param list<ProviderEntry> $providers
-     * @param list<string> $groups
-     */
+    /** @param list<ProviderEntry> $providers @param list<string> $groups */
     private function appendGroup(array &$providers, string $group, Node\Expr\Array_ $array, array $groups, string $source): void
     {
         $seen = [];
@@ -127,7 +123,16 @@ final class ProviderInspector
                 'line' => $line,
                 'message' => $message,
             ];
+
+            return;
         }
+
+        $this->diagnostics[self::MAX_DIAGNOSTICS - 1] = [
+            'code' => 'diagnostics_truncated',
+            'source' => null,
+            'line' => null,
+            'message' => sprintf('Provider diagnostics are limited to %d entries.', self::MAX_DIAGNOSTICS),
+        ];
     }
 
     /** @param list<string> $groups @return ProviderEntry */
@@ -147,11 +152,7 @@ final class ProviderInspector
         ];
     }
 
-    /**
-     * @param list<string> $groups
-     * @param list<ProviderEntry> $providers
-     * @return array<string,list<string>>
-     */
+    /** @param list<string> $groups @param list<ProviderEntry> $providers @return array<string,list<string>> */
     private function effective(array $groups, array $providers): array
     {
         $runtimeGroups = array_values(array_filter($groups, static fn(string $group): bool => $group !== 'common'));
@@ -194,10 +195,7 @@ final class ProviderInspector
             <=> [$right['source'] ?? '', $right['line'] ?? 0, $right['code'], $right['message']]);
     }
 
-    /**
-     * @param list<string> $groups
-     * @return list<ProviderEntry>
-     */
+    /** @param list<string> $groups @return list<ProviderEntry> */
     private function groupEntries(Node\Expr\Array_ $array, array $groups, string $source): array
     {
         $allowed = array_fill_keys($groups, true);
@@ -229,7 +227,7 @@ final class ProviderInspector
 
             $this->appendGroup($providers, $group, $item->value, $groups, $source);
             if (count($providers) >= self::MAX_PROVIDERS) {
-                $this->diagnostic('output_limit_exceeded', $source, $item->getStartLine(), sprintf('Provider inspection is limited to %d declarations.', self::MAX_PROVIDERS));
+                $this->diagnostic('provider_limit_exceeded', $source, $item->getStartLine(), sprintf('Provider inspection is limited to %d declarations.', self::MAX_PROVIDERS));
 
                 break;
             }
@@ -318,6 +316,7 @@ final class ProviderInspector
 
         $traverser = new NodeTraverser();
         $traverser->addVisitor(new NameResolver(null, ['preserveOriginalNames' => true, 'replaceNodes' => false]));
+        $traverser->addVisitor(new PhpNodeBudgetVisitor());
 
         try {
             /** @var list<Node\Stmt> $resolved */
@@ -326,6 +325,10 @@ final class ProviderInspector
             return $resolved;
         } catch (Error $error) {
             $this->diagnostic('parse_error', $source, $error->getStartLine() ?: null, $error->getRawMessage());
+
+            return null;
+        } catch (RuntimeException $error) {
+            $this->diagnostic('inspection_limit_exceeded', $source, null, $error->getMessage());
 
             return null;
         }
@@ -351,10 +354,7 @@ final class ProviderInspector
         return $nodes;
     }
 
-    /**
-     * @param list<string> $groups
-     * @return list<ProviderEntry>
-     */
+    /** @param list<string> $groups @return list<ProviderEntry> */
     private function projectProviders(array $groups): array
     {
         $relative = 'bootstrap/providers.php';
@@ -394,7 +394,7 @@ final class ProviderInspector
 
     private function providerClass(Node\Expr $expr): ?string
     {
-        if ($expr instanceof Node\Scalar\String_ && trim($expr->value) !== '') {
+        if ($expr instanceof Node\Scalar\String_ && trim($expr->value) !== '' && strlen($expr->value) <= self::MAX_IDENTIFIER_BYTES) {
             return ltrim($expr->value, '\\');
         }
         if (
@@ -404,8 +404,9 @@ final class ProviderInspector
             && strtolower($expr->name->toString()) === 'class'
         ) {
             $resolved = $expr->class->getAttribute('resolvedName');
+            $class = ($resolved instanceof Node\Name ? $resolved : $expr->class)->toString();
 
-            return ($resolved instanceof Node\Name ? $resolved : $expr->class)->toString();
+            return strlen($class) <= self::MAX_IDENTIFIER_BYTES ? $class : null;
         }
 
         return null;
@@ -413,13 +414,22 @@ final class ProviderInspector
 
     private function read(string $path): string
     {
-        $size = filesize($path);
-        if ($size !== false && $size > self::MAX_SOURCE_BYTES) {
-            throw new RuntimeException('Provider source exceeds the 1 MiB inspection limit.');
-        }
-        $source = file_get_contents($path);
-        if ($source === false || strlen($source) > self::MAX_SOURCE_BYTES || str_contains($source, "\0")) {
+        $handle = fopen($path, 'rb');
+        if ($handle === false) {
             throw new RuntimeException('Provider source could not be read safely.');
+        }
+
+        try {
+            $source = stream_get_contents($handle, self::MAX_SOURCE_BYTES + 1);
+        } finally {
+            fclose($handle);
+        }
+
+        if (!is_string($source) || str_contains($source, "\0")) {
+            throw new RuntimeException('Provider source could not be read safely.');
+        }
+        if (strlen($source) > self::MAX_SOURCE_BYTES) {
+            throw new RuntimeException('Provider source exceeds the 1 MiB inspection limit.');
         }
 
         return $source;
@@ -476,13 +486,18 @@ final class ProviderInspector
     /** @return list<string>|null */
     private function stringArray(Node\Expr $expr): ?array
     {
-        if (!$expr instanceof Node\Expr\Array_) {
+        if (!$expr instanceof Node\Expr\Array_ || count($expr->items) > 32) {
             return null;
         }
 
         $strings = [];
         foreach ($expr->items as $item) {
-            if (!$item instanceof Node\Expr\ArrayItem || $item->unpack || !$item->value instanceof Node\Scalar\String_) {
+            if (
+                !$item instanceof Node\Expr\ArrayItem
+                || $item->unpack
+                || !$item->value instanceof Node\Scalar\String_
+                || strlen($item->value->value) > 128
+            ) {
                 return null;
             }
             $strings[] = $item->value->value;
