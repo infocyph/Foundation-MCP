@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Infocyph\FoundationMcp\Foundation\Internal;
 
+use Infocyph\FoundationMcp\Analysis\Internal\PhpNodeBudgetVisitor;
 use Infocyph\FoundationMcp\Composer\ComposerInspector;
 use Infocyph\FoundationMcp\Project\Project;
 use Infocyph\FoundationMcp\Security\PathPolicy;
@@ -55,22 +56,36 @@ final readonly class InstalledRuntimeContract
             ]]];
         }
 
-        $size = filesize($path);
-        if ($size === false || $size > self::MAX_SOURCE_BYTES) {
+        $handle = fopen($path, 'rb');
+        if ($handle === false) {
             return ['methods' => [], 'preset' => false, 'diagnostics' => [[
                 'code' => 'runtime_contract_invalid',
                 'source' => 'infocyph/foundation:src/Foundation.php',
                 'line' => null,
-                'message' => 'Installed Foundation runtime contract exceeds the inspection limit.',
+                'message' => 'Installed Foundation runtime contract is unreadable.',
             ]]];
         }
-        $contents = file_get_contents($path);
+
+        try {
+            $contents = stream_get_contents($handle, self::MAX_SOURCE_BYTES + 1);
+        } finally {
+            fclose($handle);
+        }
+
         if (!is_string($contents) || str_contains($contents, "\0")) {
             return ['methods' => [], 'preset' => false, 'diagnostics' => [[
                 'code' => 'runtime_contract_invalid',
                 'source' => 'infocyph/foundation:src/Foundation.php',
                 'line' => null,
                 'message' => 'Installed Foundation runtime contract is unreadable or binary.',
+            ]]];
+        }
+        if (strlen($contents) > self::MAX_SOURCE_BYTES) {
+            return ['methods' => [], 'preset' => false, 'diagnostics' => [[
+                'code' => 'runtime_contract_invalid',
+                'source' => 'infocyph/foundation:src/Foundation.php',
+                'line' => null,
+                'message' => 'Installed Foundation runtime contract exceeds the inspection limit.',
             ]]];
         }
 
@@ -87,7 +102,18 @@ final readonly class InstalledRuntimeContract
 
         $traverser = new NodeTraverser();
         $traverser->addVisitor(new NameResolver(null, ['preserveOriginalNames' => true, 'replaceNodes' => false]));
-        $nodes = $traverser->traverse($nodes);
+        $traverser->addVisitor(new PhpNodeBudgetVisitor());
+
+        try {
+            $nodes = $traverser->traverse($nodes);
+        } catch (RuntimeException $error) {
+            return ['methods' => [], 'preset' => false, 'diagnostics' => [[
+                'code' => 'runtime_contract_too_complex',
+                'source' => 'infocyph/foundation:src/Foundation.php',
+                'line' => null,
+                'message' => $error->getMessage(),
+            ]]];
+        }
 
         $methods = [];
         $preset = false;
