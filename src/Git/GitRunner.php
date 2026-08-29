@@ -75,25 +75,26 @@ final readonly class GitRunner
         ]);
     }
 
-    /**
-     * @return array<string, string>
-     */
+    /** @return array<string, string> */
     private function environment(): array
     {
-        $environment = getenv();
-        $environment = is_array($environment) ? $environment : [];
+        $environment = [
+            'GIT_CONFIG_NOSYSTEM' => '1',
+            'GIT_CONFIG_GLOBAL' => PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null',
+            'GIT_OPTIONAL_LOCKS' => '0',
+            'GIT_TERMINAL_PROMPT' => '0',
+            'LANG' => 'C',
+            'LC_ALL' => 'C',
+        ];
 
-        foreach (array_keys($environment) as $name) {
-            if (str_starts_with(strtoupper($name), 'GIT_')) {
-                unset($environment[$name]);
+        // Keep only variables required to resolve/launch Git and create temporary files. Do not forward host credentials.
+        foreach (['PATH', 'SystemRoot', 'WINDIR', 'PATHEXT', 'TMP', 'TEMP', 'TMPDIR'] as $name) {
+            $value = getenv($name);
+
+            if (is_string($value) && $value !== '') {
+                $environment[$name] = $value;
             }
         }
-
-        // Ignore caller/global Git redirection and interactive helpers; only the resolved project repository should influence inspection.
-        $environment['GIT_CONFIG_NOSYSTEM'] = '1';
-        $environment['GIT_CONFIG_GLOBAL'] = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
-        $environment['GIT_OPTIONAL_LOCKS'] = '0';
-        $environment['GIT_TERMINAL_PROMPT'] = '0';
 
         return $environment;
     }
