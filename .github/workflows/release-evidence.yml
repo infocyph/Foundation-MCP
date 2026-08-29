@@ -110,3 +110,5 @@ jobs:
         if: steps.release_guard.outcome == 'failure'
         run: exit 1
       - run: composer ic:benchmark
+      - run: composer benchmark:representative
+      - run: composer ic:benchmark:validate .phpforge-report/benchmark-result.json
