@@ -11,12 +11,6 @@
         "model-context-protocol",
         "development-tools"
     ],
-    "authors": [
-        {
-            "name": "infocyph",
-            "email": "infocyph@gmail.com"
-        }
-    ],
     "require": {
         "php": "^8.4",
         "composer-runtime-api": "^2.1",
