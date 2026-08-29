@@ -11,6 +11,12 @@
         "model-context-protocol",
         "development-tools"
     ],
+    "authors": [
+        {
+            "name": "infocyph",
+            "email": "infocyph@gmail.com"
+        }
+    ],
     "require": {
         "php": "^8.4",
         "composer-runtime-api": "^2.1",
@@ -42,5 +48,8 @@
         },
         "optimize-autoloader": true,
         "sort-packages": true
+    },
+    "scripts": {
+        "benchmark:representative": "@php benchmarks/representative.php"
     }
 }
